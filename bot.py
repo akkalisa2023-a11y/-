@@ -1,11 +1,11 @@
-import os, json, logging
+import os, json, logging, random
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 from datetime import datetime
 
 app = Flask(__name__)
-CORS(app)  # разрешаем запросы из браузера
+CORS(app)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_TOKEN_HERE")
 CHAT_ID   = os.environ.get("CHAT_ID", "YOUR_CHAT_ID")
@@ -33,12 +33,67 @@ def fraud_warning(fraud_pct):
     if fraud_pct > 5:  return "⚠️ Есть"
     return None
 
+def get_praise(rank, grade, name):
+    """Генерирует похвалу для топ торговых"""
+    first_name = name.split()[0]
+    if rank == 1:
+        phrases = [
+            f"🏆 {first_name} снова №1 — машина продаж!",
+            f"🚀 {first_name} рвёт всех — абсолютный топ месяца!",
+            f"💎 {first_name} на вершине — держи темп, чемпион!"
+        ]
+    elif rank == 2:
+        phrases = [
+            f"🥈 {first_name} — крепкий второй! До первого рукой подать 💪",
+            f"🥈 {first_name} дышит в спину лидеру — так держать!"
+        ]
+    elif rank == 3:
+        phrases = [
+            f"🥉 {first_name} — бронза! В тройке лучших — уже круто 👏",
+            f"🥉 {first_name} в топ-3 — отличный результат!"
+        ]
+    elif grade == "A":
+        phrases = [f"🔥 {first_name} — огонь месяца! Растёшь!"]
+    else:
+        return None
+    return random.choice(phrases)
+
+def build_insights(data):
+    """Генерирует аналитические выводы"""
+    d = data["current"]
+    prev = data.get("prev")
+    insights = []
+
+    if prev:
+        diff = d.get("total", 0) - prev.get("total", 0)
+        diff_pct = round(diff / prev.get("total", 1) * 100)
+        if diff < 0:
+            insights.append(f"📉 Активации упали на {abs(diff)} ({abs(diff_pct)}%) vs прошлого месяца — нужен разбор причин")
+        elif diff > 0:
+            insights.append(f"📈 Активации выросли на {diff} (+{diff_pct}%) — команда прибавила!")
+
+        fraud_now = d.get("fraud_pct", 0)
+        fraud_prev = prev.get("fraud_pct", 0)
+        if fraud_now > fraud_prev + 5:
+            insights.append(f"⚠️ Фрод вырос с {fraud_prev}% до {fraud_now}% — срочно разобраться!")
+        elif fraud_now < fraud_prev - 3:
+            insights.append(f"✅ Фрод снизился с {fraud_prev}% до {fraud_now}% — хорошая работа!")
+
+    tp_list = d.get("tp", [])
+    if tp_list:
+        top = tp_list[0]
+        top_name = top["name"].split("(")[0].strip().split()[0]
+        top_share = round(top["acts"] / d.get("total", 1) * 100)
+        if top_share > 40:
+            insights.append(f"⚡ {top_name} даёт {top_share}% всех активаций — высокая зависимость от одного ТП")
+
+    return insights
+
 def build_report(data, month_label):
     d = data["current"]
     prev = data.get("prev")
     tp_list = d.get("tp", [])
-    
-    # --- Заголовок ---
+
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
     lines = [
         f"<b>📊 АС — Отчёт за {month_label}</b>",
@@ -46,7 +101,6 @@ def build_report(data, month_label):
         "",
     ]
 
-    # --- KPI сводка ---
     total = d.get("total", 0)
     ap    = d.get("ap", 0)
     p3    = d.get("p3", 0)
@@ -72,10 +126,13 @@ def build_report(data, month_label):
     else:
         lines.append(f"✅ <b>Фрод:</b> {fraud} акт. ({fraud_pct}%) — в норме")
 
-    # --- Топ-3 торговых ---
+    # --- Топ торговых с похвалами ---
     lines += ["", "━━━━━━━━━━━━━━━━━━━━", "🏅 <b>ТОП торговых:</b>", ""]
 
     medals = ["🥇", "🥈", "🥉"]
+    eff = data.get("efficiency", [])
+    eff_map = {e["name"].split("(")[0].strip(): e for e in eff}
+
     for i, tp in enumerate(tp_list[:5]):
         name = tp["name"].split("(")[0].strip()
         acts = tp["acts"]
@@ -85,7 +142,14 @@ def build_report(data, month_label):
         medal = medals[i] if i < 3 else f"{i+1}."
         lines.append(f"{medal} <b>{name}</b> — {acts} акт. | {partners} партн.{fraud_note}")
 
-    # --- Антитоп (если есть фрод) ---
+        # Добавляем похвалу для топ-3
+        eff_data = eff_map.get(name)
+        grade = eff_data["grade"] if eff_data else ("A" if i == 0 else "B")
+        praise = get_praise(i + 1, grade, name)
+        if praise:
+            lines.append(f"   <i>{praise}</i>")
+
+    # --- Антитоп (фрод) ---
     fraud_tp = [t for t in tp_list if t.get("fraud", 0) > 0]
     fraud_tp.sort(key=lambda x: -x.get("fraud_pct", 0))
     if fraud_tp:
@@ -94,8 +158,7 @@ def build_report(data, month_label):
             name = tp["name"].split("(")[0].strip()
             lines.append(f"• <b>{tp['fraud']}</b> фрод ({tp['fraud_pct']}%) → {name}")
 
-    # --- Эффективность топ-3 ---
-    eff = data.get("efficiency", [])
+    # --- Эффективность ---
     if eff:
         lines += ["", "━━━━━━━━━━━━━━━━━━━━", "⭐ <b>Рейтинг эффективности:</b>", ""]
         for item in eff[:5]:
@@ -105,18 +168,25 @@ def build_report(data, month_label):
             emoji = grade_emoji(grade)
             lines.append(f"{emoji} <b>{grade}</b> {name} — {score} очков")
 
+    # --- Аналитические выводы ---
+    insights = build_insights(data)
+    if insights:
+        lines += ["", "━━━━━━━━━━━━━━━━━━━━", "💡 <b>Выводы:</b>", ""]
+        for ins in insights:
+            lines.append(ins)
+
     # --- Ссылка на дашборд ---
-    lines += [
-        "",
-        "━━━━━━━━━━━━━━━━━━━━",
-        f"📱 <a href='{DASHBOARD_URL}'>Открыть полный дашборд →</a>"
-    ]
+    if DASHBOARD_URL and DASHBOARD_URL != "https://ваш-дашборд.com":
+        lines += [
+            "",
+            "━━━━━━━━━━━━━━━━━━━━",
+            f"📱 <a href='{DASHBOARD_URL}'>Открыть полный дашборд →</a>"
+        ]
 
     return "\n".join(lines)
 
 
 def build_personal_report(tp_data, month_label, rank):
-    """Персональное сообщение торговому (опционально)"""
     name = tp_data["name"].split("(")[0].strip()
     grade = tp_data.get("grade", "B")
     score = tp_data.get("score", 0)
@@ -133,7 +203,6 @@ def build_personal_report(tp_data, month_label, rank):
         "B": ["👍 Стабильно, но есть куда расти", "🎯 Ровный темп, давай прибавим?", "📊 Хорошая база, нужен рывок"],
         "C": ["⚠️ Нужно прибавить, поговорим?", "🔧 Есть над чем поработать", "💬 Давай разберём что мешает"]
     }
-    import random
     phrase = random.choice(phrases.get(grade, phrases["B"]))
 
     lines = [
@@ -151,14 +220,10 @@ def build_personal_report(tp_data, month_label, rank):
     else:
         lines.append("✅ Фрода нет — чисто!")
 
-    lines += [
-        "",
-        f"📱 <a href='{DASHBOARD_URL}'>Полный дашборд</a>"
-    ]
+    if DASHBOARD_URL and DASHBOARD_URL != "https://ваш-дашборд.com":
+        lines += ["", f"📱 <a href='{DASHBOARD_URL}'>Полный дашборд</a>"]
     return "\n".join(lines)
 
-
-# ── ENDPOINTS ────────────────────────────────────────────────
 
 @app.route("/ping", methods=["GET"])
 def ping():
@@ -166,7 +231,6 @@ def ping():
 
 @app.route("/send-report", methods=["POST"])
 def send_report():
-    """Вызывается дашбордом после загрузки Excel"""
     try:
         data = request.json
         month_label = data.get("month_label", "текущий месяц")
@@ -180,14 +244,12 @@ def send_report():
 
 @app.route("/send-personal", methods=["POST"])
 def send_personal():
-    """Персональное сообщение конкретному ТП (если настроен их chat_id)"""
     try:
         data = request.json
-        # data = {tp_data, month_label, rank, personal_chat_id}
         personal_chat_id = data.get("personal_chat_id")
         if not personal_chat_id:
             return jsonify({"status": "skip", "reason": "no personal_chat_id"})
-        
+
         text = build_personal_report(data["tp_data"], data["month_label"], data["rank"])
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         r = requests.post(url, json={

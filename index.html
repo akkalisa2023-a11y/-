@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>АС — Партнёрский дашборд</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+:root{
+  --bg:#0d110d;--bg2:#121712;--bg3:#171f17;--card:#1c251c;--card2:#202d20;
+  --border:rgba(74,210,134,0.12);--border2:rgba(74,210,134,0.28);
+  --mint:#4ad286;--mint2:#38b870;--mint-dim:rgba(74,210,134,0.08);--mint-glow:rgba(74,210,134,0.18);
+  --text:#edf5f0;--text2:#7fa88f;--text3:#4a6454;
+  --red:#e84040;--red-dim:rgba(232,64,64,0.12);
+  --amber:#f5a623;--amber-dim:rgba(245,166,35,0.12);
+  --radius:12px;--radius-sm:8px;
+  /* operator colors */
+  --beeline:#FFD700;--beeline2:#1a1a1a;
+  --mega:#830051;--mega2:#00B956;
+  --mts:#E30611;
+  --yota:#00D4CC;
+  --t2:#FF0090;--t2b:#1a1a1a;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:var(--bg2)}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px}
+
+/* HEADER */
+.header{background:var(--bg2);border-bottom:1px solid var(--border);padding:12px 24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:100;backdrop-filter:blur(12px)}
+.logo-wrap{display:flex;align-items:center;gap:10px}
+.logo-img{width:32px;height:32px}
+.logo-txt{font-size:17px;font-weight:700;color:var(--text);letter-spacing:-0.3px}
+.logo-sub{font-size:11px;color:var(--text3);margin-left:2px}
+.month-btns{display:flex;gap:5px;flex-wrap:wrap;margin-left:8px}
+.mbtn{padding:5px 14px;border:1px solid var(--border);border-radius:20px;background:transparent;cursor:pointer;font-size:12px;color:var(--text2);font-family:inherit;transition:all .2s}
+.mbtn:hover{border-color:var(--mint);color:var(--mint)}
+.mbtn.on{background:var(--mint);color:#000;border-color:var(--mint);font-weight:600;box-shadow:0 0 16px var(--mint-glow)}
+.upload-area{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap}
+.upload-btn{padding:6px 14px;border:1px solid var(--border2);border-radius:20px;cursor:pointer;font-size:12px;color:var(--mint);background:var(--mint-dim);font-family:inherit;transition:all .2s;white-space:nowrap}
+.upload-btn:hover{background:var(--mint);color:#000}
+input[type=file]{display:none}
+
+/* TABS */
+.tabs{background:var(--bg2);border-bottom:1px solid var(--border);padding:0 24px;display:flex;gap:0}
+.tab{padding:12px 20px;cursor:pointer;border-bottom:2px solid transparent;font-size:13px;color:var(--text3);transition:all .2s;font-weight:500}
+.tab:hover{color:var(--text2)}
+.tab.on{color:var(--mint);border-bottom-color:var(--mint)}
+
+/* CONTENT */
+.content{padding:20px 24px}
+
+/* KPI */
+.kgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin-bottom:14px}
+.kc{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;position:relative;overflow:hidden;transition:border-color .3s,transform .2s;animation:fadeUp .4s ease both}
+.kc:hover{border-color:var(--border2);transform:translateY(-2px)}
+.kc::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--mint),transparent);opacity:.6}
+.kc.fraud-card::before{background:linear-gradient(90deg,var(--red),transparent)}
+.kl{font-size:10px;color:var(--text3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.5px}
+.kv{font-size:24px;font-weight:700;color:var(--text);line-height:1}
+.kv.red{color:var(--red)}
+.ks{font-size:11px;margin-top:4px;color:var(--text3)}
+.up{color:var(--mint)}.dn{color:var(--red)}
+
+/* GRID */
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;animation:fadeUp .4s ease both;transition:border-color .3s}
+.card:hover{border-color:var(--border2)}
+.card.full{grid-column:1/-1}
+.ct{font-size:11px;font-weight:600;color:var(--text2);margin-bottom:12px;text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:6px}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--mint);box-shadow:0 0 6px var(--mint);flex-shrink:0}
+.dot-red{background:var(--red);box-shadow:0 0 6px var(--red)}
+.dot-amber{background:var(--amber);box-shadow:0 0 6px var(--amber)}
+
+/* BARS */
+.brow{display:flex;align-items:center;gap:8px;margin-bottom:6px;animation:fadeRight .35s ease both}
+.bn{font-size:11px;color:var(--text2);width:155px;flex-shrink:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.btr{flex:1;background:var(--bg3);border-radius:4px;height:16px;overflow:hidden}
+.bf{height:100%;border-radius:4px;display:flex;align-items:center;justify-content:flex-end;padding-right:6px;font-size:10px;font-weight:600;min-width:28px;width:0;transition:width .8s cubic-bezier(.4,0,.2,1)}
+.bg{background:linear-gradient(90deg,#2da860,var(--mint));color:#000}
+.br{background:linear-gradient(90deg,#b02020,var(--red));color:#fff}
+.bb{background:linear-gradient(90deg,#1a5a8a,#2980b9);color:#fff}
+.ba{background:linear-gradient(90deg,#c07000,var(--amber));color:#000}
+.bfr{background:linear-gradient(90deg,#a00,var(--red));color:#fff}
+.rn{display:inline-flex;width:20px;height:20px;border-radius:50%;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;color:var(--text3);background:var(--bg3);border:1px solid var(--border)}
+.g1{background:linear-gradient(135deg,#b8860b,#ffd700);color:#000;border:none}
+.s1{background:linear-gradient(135deg,#555,#aaa);color:#000;border:none}
+.b1{background:linear-gradient(135deg,#7a3010,#cd7f32);color:#fff;border:none}
+
+/* TABLE */
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;padding:7px 9px;font-weight:600;font-size:10px;color:var(--text3);border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.5px;white-space:nowrap}
+td{padding:7px 9px;border-bottom:1px solid rgba(255,255,255,.04);color:var(--text2);transition:.12s}
+tr:hover td{background:var(--mint-dim);color:var(--text)}
+tr:last-child td{border-bottom:none}
+.tr-anim{animation:fadeUp .3s ease both}
+
+/* BADGES */
+.bdg{display:inline-block;font-size:10px;padding:2px 7px;border-radius:20px;font-weight:600}
+.bg2{background:rgba(74,210,134,.12);color:var(--mint)}
+.ba2{background:var(--amber-dim);color:var(--amber)}
+.br2{background:var(--red-dim);color:var(--red)}
+.bb2{background:rgba(41,128,185,.12);color:#2980b9}
+
+/* SEGMENTS */
+.seg{display:flex;gap:7px;margin-bottom:12px;flex-wrap:wrap}
+.sc{flex:1;min-width:80px;border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 8px;text-align:center;cursor:pointer;background:var(--card);transition:all .2s}
+.sc:hover{border-color:var(--mint);background:var(--mint-dim)}
+.sc.on{border-color:var(--mint);background:var(--mint-dim);box-shadow:0 0 12px var(--mint-glow)}
+.sn{font-size:18px;font-weight:700}
+.sl{font-size:10px;color:var(--text3);margin-top:2px;text-transform:uppercase;letter-spacing:.4px}
+
+/* OPERATOR CHIPS */
+.op-chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600}
+.op-beeline{background:var(--beeline);color:var(--beeline2)}
+.op-mega{background:var(--mega);color:#fff}
+.op-mts{background:var(--mts);color:#fff}
+.op-yota{background:var(--yota);color:#000}
+.op-t2{background:var(--t2);color:#fff}
+
+/* FRAUD HIGHLIGHT */
+.fraud-row td{background:rgba(232,64,64,0.04)!important}
+.fraud-val{color:var(--red);font-weight:600}
+
+/* EFFICIENCY CARD */
+.eff-card{border-radius:var(--radius);padding:14px 16px;margin-bottom:8px;border:1px solid var(--border);display:flex;align-items:center;gap:14px;transition:all .2s;animation:fadeUp .4s ease both;cursor:default}
+.eff-card:hover{border-color:var(--border2);transform:translateX(3px)}
+.eff-rank{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;flex-shrink:0}
+.eff-info{flex:1;min-width:0}
+.eff-name{font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}
+.eff-phrase{font-size:11px;color:var(--mint);margin-bottom:4px}
+.eff-stats{display:flex;gap:10px;flex-wrap:wrap}
+.eff-stat{font-size:10px;color:var(--text3)}
+.eff-score{font-size:20px;font-weight:700;flex-shrink:0;text-align:right}
+.eff-bar-wrap{width:100%;height:4px;background:var(--bg3);border-radius:2px;margin-top:6px;overflow:hidden}
+.eff-bar-fill{height:100%;border-radius:2px;transition:width .9s cubic-bezier(.4,0,.2,1)}
+
+.score-s{background:linear-gradient(135deg,#1a3a2a,#1c3a25);border-color:rgba(74,210,134,0.35)}
+.score-a{background:linear-gradient(135deg,#1a2a3a,#1a2f3a);border-color:rgba(74,155,210,0.3)}
+.score-b{background:linear-gradient(135deg,#2a2a1a,#2a2f15);border-color:rgba(200,200,74,0.25)}
+.score-c{background:linear-gradient(135deg,#2a1a1a,#2a1515);border-color:rgba(210,74,74,0.25)}
+
+.medal-s{background:linear-gradient(135deg,var(--mint2),var(--mint))}
+.medal-a{background:linear-gradient(135deg,#1a5a8a,#2980b9)}
+.medal-b{background:linear-gradient(135deg,#b8860b,#ffd700)}
+.medal-c{background:linear-gradient(135deg,#7a3010,#cd7f32)}
+
+/* TOAST */
+.toast{position:fixed;bottom:24px;right:24px;background:var(--card);border:1px solid var(--mint);border-radius:var(--radius);padding:11px 18px;font-size:13px;color:var(--mint);transform:translateY(80px);opacity:0;transition:all .3s;z-index:999;box-shadow:0 0 24px var(--mint-glow)}
+.toast.show{transform:translateY(0);opacity:1}
+
+/* ANIMATIONS */
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeRight{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:translateX(0)}}
+.kc:nth-child(1){animation-delay:.04s}.kc:nth-child(2){animation-delay:.08s}.kc:nth-child(3){animation-delay:.12s}.kc:nth-child(4){animation-delay:.16s}.kc:nth-child(5){animation-delay:.2s}.kc:nth-child(6){animation-delay:.24s}
+.brow:nth-child(1){animation-delay:.04s}.brow:nth-child(2){animation-delay:.08s}.brow:nth-child(3){animation-delay:.12s}.brow:nth-child(4){animation-delay:.16s}.brow:nth-child(5){animation-delay:.2s}.brow:nth-child(6){animation-delay:.24s}.brow:nth-child(7){animation-delay:.28s}.brow:nth-child(8){animation-delay:.32s}
+
+.cw{position:relative;width:100%}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo-wrap">
+    <svg class="logo-img" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <polygon points="20,3 37,34 3,34" stroke="#4ad286" stroke-width="3" fill="none" stroke-linejoin="round"/>
+      <rect x="12" y="30" width="16" height="3" rx="1.5" fill="#4ad286"/>
+    </svg>
+    <span class="logo-txt">АС</span>
+    <span class="logo-sub">Партнёрский дашборд</span>
+  </div>
+  <div class="month-btns" id="month-btns"></div>
+  <div class="upload-area">
+    <label class="upload-btn" for="file-act">＋ Активации</label>
+    <input type="file" id="file-act" accept=".xlsx" onchange="loadFile(this,'act')">
+    <label class="upload-btn" for="file-privl">＋ Привлечение</label>
+    <input type="file" id="file-privl" accept=".xlsx" onchange="loadFile(this,'privl')">
+    <button class="upload-btn" onclick="showBotSettings()" style="background:rgba(0,136,204,0.15);border-color:rgba(0,136,204,0.4);color:#29abe2" title="Настройки Telegram бота">✈️ TG</button>
+  </div>
+  <!-- TG Settings Modal -->
+  <div id="tg-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:200;align-items:center;justify-content:center">
+    <div style="background:var(--card);border:1px solid var(--border2);border-radius:var(--radius);padding:24px;width:380px;max-width:90vw">
+      <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:6px">✈️ Telegram бот</div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:16px">После деплоя вставь URL сервера — дашборд будет сам слать отчёты после загрузки Excel</div>
+      <input id="bot-url-input" type="text" placeholder="https://xxx.railway.app"
+        style="width:100%;padding:8px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:13px;font-family:inherit;margin-bottom:8px"
+        value="">
+      <input id="api-secret-input" type="text" placeholder="API Secret (по умолчанию: as_secret_2026)"
+        style="width:100%;padding:8px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:13px;font-family:inherit;margin-bottom:10px"
+        value="">
+      <div style="display:flex;gap:8px">
+        <button onclick="setBotUrl(document.getElementById('bot-url-input').value);localStorage.setItem('as_api_secret',document.getElementById('api-secret-input').value.trim());document.getElementById('tg-modal').style.display='none'"
+          style="flex:1;padding:8px;background:var(--mint);color:#000;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;font-family:inherit">Сохранить</button>
+        <button onclick="testBot()"
+          style="flex:1;padding:8px;background:var(--mint-dim);color:var(--mint);border:1px solid var(--border2);border-radius:var(--radius-sm);cursor:pointer;font-family:inherit">Тест отправки</button>
+        <button onclick="document.getElementById('tg-modal').style.display='none'"
+          style="padding:8px 12px;background:transparent;color:var(--text3);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-family:inherit">✕</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="tabs">
+  <div class="tab on" onclick="sw('sv',this)">Сводка</div>
+  <div class="tab" onclick="sw('tp',this)">Торговые</div>
+  <div class="tab" onclick="sw('pr',this)">Партнёры</div>
+  <div class="tab" onclick="sw('at',this)">Привлечение</div>
+  <div class="tab" onclick="sw('ef',this)">Эффективность</div>
+</div>
+
+<div class="content">
+
+<!-- СВОДКА -->
+<div id="tsv">
+  <div class="kgrid" id="kpi-sv"></div>
+  <div class="g2">
+    <div class="card">
+      <div class="ct"><span class="dot"></span>Топ торговых — активации</div>
+      <div id="top-tp-sv"></div>
+    </div>
+    <div class="card">
+      <div class="ct"><span class="dot"></span>По операторам</div>
+      <div class="cw" style="height:200px"><canvas id="opsChart"></canvas></div>
+    </div>
+    <div class="card full">
+      <div class="ct"><span class="dot"></span>Динамика активаций по месяцам</div>
+      <div class="cw" style="height:165px"><canvas id="mainChart"></canvas></div>
+    </div>
+    <div class="card full">
+      <div class="ct"><span class="dot-red"></span>Фрод по торговым — топ нарушителей</div>
+      <div id="fraud-tp-sv"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ТОРГОВЫЕ -->
+<div id="ttp" style="display:none">
+  <div class="card" style="margin-bottom:12px">
+    <div class="ct"><span class="dot"></span>Рейтинг торговых <span id="tp-month-lbl" style="font-size:10px;color:var(--text3);text-transform:none;font-weight:400;margin-left:4px"></span></div>
+    <table>
+      <thead><tr><th>#</th><th>Торговый</th><th>Акт.</th><th>Пред.</th><th>Партнёров</th><th>3+</th><th>10+</th><th>🚨 Фрод</th><th>% фрод</th><th>Тренд</th></tr></thead>
+      <tbody id="tp-tbl"></tbody>
+    </table>
+  </div>
+  <div class="g2">
+    <div class="card">
+      <div class="ct"><span class="dot"></span>Топ-10 активации</div>
+      <div id="tp-bar-top"></div>
+    </div>
+    <div class="card">
+      <div class="ct"><span class="dot-red"></span>Топ фрода у ТП</div>
+      <div id="tp-bar-fraud"></div>
+    </div>
+    <div class="card">
+      <div class="ct"><span class="dot"></span>Партнёров у ТП</div>
+      <div id="tp-bar-part"></div>
+    </div>
+    <div class="card">
+      <div class="ct"><span class="dot-amber"></span>% фрода у ТП</div>
+      <div id="tp-bar-fraud-pct"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ПАРТНЁРЫ -->
+<div id="tpr" style="display:none">
+  <div class="seg">
+    <div class="sc on" onclick="seg(this,'all')"><div class="sn" id="s-all" style="color:var(--mint)">—</div><div class="sl">Все</div></div>
+    <div class="sc" onclick="seg(this,'p3')"><div class="sn" id="s-p3" style="color:var(--mint)">—</div><div class="sl">3+ продаж</div></div>
+    <div class="sc" onclick="seg(this,'p10')"><div class="sn" id="s-p10" style="color:var(--amber)">—</div><div class="sl">10+ продаж</div></div>
+    <div class="sc" onclick="seg(this,'fraud')"><div class="sn" style="color:var(--red)">🚨</div><div class="sl">Есть фрод</div></div>
+    <div class="sc" onclick="seg(this,'grow')"><div class="sn" style="color:var(--mint)">↑</div><div class="sl">Растут</div></div>
+    <div class="sc" onclick="seg(this,'drop')"><div class="sn" style="color:var(--red)">↓</div><div class="sl">Упали</div></div>
+  </div>
+  <div class="card">
+    <div class="ct"><span class="dot"></span>Партнёры (Ритейл) <span id="pr-month-lbl" style="font-size:10px;color:var(--text3);text-transform:none;font-weight:400;margin-left:4px"></span></div>
+    <table>
+      <thead><tr><th>#</th><th>Партнёр</th><th>Торговый</th><th>Тек.</th><th>Пред.</th><th>🚨 Фрод</th><th>% фрод</th><th>Тренд</th><th>Сегмент</th></tr></thead>
+      <tbody id="pr-tbl"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ПРИВЛЕЧЕНИЕ -->
+<div id="tat" style="display:none">
+  <div class="kgrid" id="kpi-at"></div>
+  <div class="g2">
+    <div class="card full">
+      <div class="ct"><span class="dot"></span>Привлечение: уникальные vs субдилеры</div>
+      <div class="cw" style="height:280px"><canvas id="privlChart"></canvas></div>
+    </div>
+    <div class="card full">
+      <div class="ct"><span class="dot"></span>Детализация</div>
+      <table>
+        <thead><tr><th>#</th><th>Торговый</th><th>Всего</th><th>Уникальных</th><th>Субдилеров</th><th>% уникальных</th></tr></thead>
+        <tbody id="privl-tbl"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ЭФФЕКТИВНОСТЬ -->
+<div id="tef" style="display:none">
+  <div style="margin-bottom:14px;padding:14px 16px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius)">
+    <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Как считается рейтинг эффективности</div>
+    <div style="font-size:12px;color:var(--text2);line-height:1.7">
+      <span style="color:var(--mint)">+</span> Активации (вес 40%) &nbsp;·&nbsp;
+      <span style="color:var(--mint)">+</span> Партнёры 3+ продаж (вес 25%) &nbsp;·&nbsp;
+      <span style="color:var(--mint)">+</span> Привлечение уникальных (вес 20%) &nbsp;·&nbsp;
+      <span style="color:var(--red)">−</span> Фрод % (штраф ×2) (вес 15%)
+    </div>
+  </div>
+  <div id="eff-list"></div>
+</div>
+
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const SEED = {"months": {"2026-06": {"total": 1139, "ap": 155, "p3": 76, "p10": 29, "avg": 7.3, "fraud": 242, "fraud_pct": 21.2, "tp": [{"name": "Переверзев Виталий (Торговый New)", "acts": 594, "partners": 51, "p3": 37, "p10": 13, "fraud": 230, "fraud_pct": 38.7}, {"name": "Боев Дмитрий  (Торговый New)", "acts": 122, "partners": 18, "p3": 8, "p10": 4, "fraud": 0, "fraud_pct": 0.0}, {"name": "Андреев Михаил (Торговый New)", "acts": 70, "partners": 16, "p3": 5, "p10": 2, "fraud": 0, "fraud_pct": 0.0}, {"name": "Леонов Михаил (Проект Коробочка)", "acts": 44, "partners": 8, "p3": 2, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Аверин Алексей Владимирович (СМ)", "acts": 41, "partners": 1, "p3": 1, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Бакытов Бекжан (Торговый New)", "acts": 33, "partners": 7, "p3": 4, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Бузина Яна (Руководитель проекта New)", "acts": 27, "partners": 3, "p3": 2, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Арен Дуринян (Торговый New)", "acts": 25, "partners": 4, "p3": 2, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Тупиков Станислав (ФЖ)", "acts": 23, "partners": 5, "p3": 5, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Юрлов Александр", "acts": 20, "partners": 11, "p3": 3, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Мокров Евгений  (Торговый New)", "acts": 19, "partners": 5, "p3": 1, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Ефимов Алексей Андреевич (СМ)", "acts": 14, "partners": 2, "p3": 1, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Кузьмина Светлана (Торговый NEW)", "acts": 14, "partners": 3, "p3": 1, "p10": 1, "fraud": 12, "fraud_pct": 85.7}, {"name": "Доброхотов Владислав Игоревич (СМ)", "acts": 5, "partners": 2, "p3": 1, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Батурин Павел Юрьевич (СМ)", "acts": 4, "partners": 1, "p3": 1, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Фролов Станислав (Проект Коробочка)", "acts": 4, "partners": 3, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Заяц Артем Викторович (СМ)", "acts": 3, "partners": 2, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Гришин Александр Сергеевич (СМ)", "acts": 2, "partners": 2, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Федосеева Мария Павловна (СМ)", "acts": 2, "partners": 1, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Кувшинова Зоя Александровна (СМ)", "acts": 1, "partners": 1, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}], "partners": [{"r": "МИНАЕВ ЕГОР АЛЕКСЕЕВИЧ", "t": "Переверзев Виталий (Торговый New)", "acts": 154, "fraud": 154, "fraud_pct": 100.0}, {"r": "Оздамиров Ибрагим Адамович", "t": "Переверзев Виталий (Торговый New)", "acts": 68, "fraud": 0, "fraud_pct": 0.0}, {"r": "Самуйло Дмитрий Евгеньевич", "t": "Переверзев Виталий (Торговый New)", "acts": 65, "fraud": 65, "fraud_pct": 100.0}, {"r": "Гаджиев Рустам Поладович", "t": "Аверин Алексей Владимирович (СМ)", "acts": 41, "fraud": 0, "fraud_pct": 0.0}, {"r": "Колтун Станислав Сергеевич", "t": "Переверзев Виталий (Торговый New)", "acts": 38, "fraud": 0, "fraud_pct": 0.0}, {"r": "Семенюк Александр Владимирович", "t": "Переверзев Виталий (Торговый New)", "acts": 38, "fraud": 0, "fraud_pct": 0.0}, {"r": "Соловьева Алеся", "t": "Боев Дмитрий  (Торговый New)", "acts": 38, "fraud": 0, "fraud_pct": 0.0}, {"r": "ОРАЖУКХОНОВ УЛУГБЕК", "t": "Леонов Михаил (Проект Коробочка)", "acts": 33, "fraud": 0, "fraud_pct": 0.0}, {"r": "Хабиев Ибрагим Ахмедович", "t": "Боев Дмитрий  (Торговый New)", "acts": 22, "fraud": 0, "fraud_pct": 0.0}, {"r": "Тагиева Вафа Натик Кызы", "t": "Бузина Яна (Руководитель проекта New)", "acts": 21, "fraud": 0, "fraud_pct": 0.0}, {"r": "ВАХРУШЕВ ДАНИЛ СТАНИСЛАВОВИЧ", "t": "Переверзев Виталий (Торговый New)", "acts": 20, "fraud": 0, "fraud_pct": 0.0}, {"r": "КАГИРОВ Рамзан Ильясович", "t": "Бакытов Бекжан (Торговый New)", "acts": 20, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мамадзада Джаваншир", "t": "Андреев Михаил (Торговый New)", "acts": 20, "fraud": 0, "fraud_pct": 0.0}, {"r": "Раббимкулов Камолджон Комилзхонович", "t": "Арен Дуринян (Торговый New)", "acts": 20, "fraud": 0, "fraud_pct": 0.0}, {"r": "Аскеров Эльнур Акиф оглы", "t": "Андреев Михаил (Торговый New)", "acts": 17, "fraud": 0, "fraud_pct": 0.0}, {"r": "Дадаев Магомед Вахаевич", "t": "Боев Дмитрий  (Торговый New)", "acts": 16, "fraud": 0, "fraud_pct": 0.0}, {"r": "Ахмедов Бабек Несюрович", "t": "Мокров Евгений  (Торговый New)", "acts": 15, "fraud": 0, "fraud_pct": 0.0}, {"r": "Лазинина Александра Сергеевна", "t": "Переверзев Виталий (Торговый New)", "acts": 14, "fraud": 0, "fraud_pct": 0.0}, {"r": "Тагизаде Ильгар Бахадыр Оглы", "t": "Переверзев Виталий (Торговый New)", "acts": 13, "fraud": 0, "fraud_pct": 0.0}, {"r": "Басаев Анвар Сайд-Эмиевич", "t": "Переверзев Виталий (Торговый New)", "acts": 12, "fraud": 0, "fraud_pct": 0.0}, {"r": "Ионов Андрей Александрович", "t": "Кузьмина Светлана (Торговый NEW)", "acts": 12, "fraud": 12, "fraud_pct": 100.0}, {"r": "Исраилова Розана Магомедсамиевна", "t": "Боев Дмитрий  (Торговый New)", "acts": 12, "fraud": 0, "fraud_pct": 0.0}, {"r": "Манукян Давид Вачаганович", "t": "Ефимов Алексей Андреевич (СМ)", "acts": 12, "fraud": 0, "fraud_pct": 0.0}, {"r": "Худяков Юрий Александрович", "t": "Переверзев Виталий (Торговый New)", "acts": 12, "fraud": 0, "fraud_pct": 0.0}, {"r": "Рагимов Шамкир Ширали оглы", "t": "Переверзев Виталий (Торговый New)", "acts": 11, "fraud": 0, "fraud_pct": 0.0}, {"r": "Сиворатченко Дмитрий Андреевич", "t": "Переверзев Виталий (Торговый New)", "acts": 11, "fraud": 0, "fraud_pct": 0.0}, {"r": "Смирнова Марина Владимирован", "t": "Тупиков Станислав (ФЖ)", "acts": 11, "fraud": 0, "fraud_pct": 0.0}, {"r": "Шевелёва Наталья Константиновна", "t": "Переверзев Виталий (Торговый New)", "acts": 10, "fraud": 0, "fraud_pct": 0.0}, {"r": "Велиев Осман Эмирвелиевич", "t": "Переверзев Виталий (Торговый New)", "acts": 9, "fraud": 9, "fraud_pct": 100.0}, {"r": "Исаев Вячеслав Александрович", "t": "Переверзев Виталий (Торговый New)", "acts": 9, "fraud": 0, "fraud_pct": 0.0}, {"r": "Гусейнов Рашад Адиль Оглы", "t": "Андреев Михаил (Торговый New)", "acts": 8, "fraud": 0, "fraud_pct": 0.0}, {"r": "Алексеева Ирина Николаевна", "t": "Переверзев Виталий (Торговый New)", "acts": 7, "fraud": 0, "fraud_pct": 0.0}, {"r": "ДУДАЕВ РАСУЛ АСЛАМБЕКОВИЧ", "t": "Переверзев Виталий (Торговый New)", "acts": 7, "fraud": 0, "fraud_pct": 0.0}, {"r": "КЛООС РОМАН ВЛАДИМИРОВИЧ", "t": "Переверзев Виталий (Торговый New)", "acts": 7, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мирзаметов Абубукар Мирзаметович", "t": "Боев Дмитрий  (Торговый New)", "acts": 7, "fraud": 0, "fraud_pct": 0.0}, {"r": "ГРАЧЕВА АНАСТАСИЯ ВЛАДИМИРОВНА", "t": "Переверзев Виталий (Торговый New)", "acts": 6, "fraud": 0, "fraud_pct": 0.0}, {"r": "Долженков Валентин Александрович", "t": "Переверзев Виталий (Торговый New)", "acts": 6, "fraud": 0, "fraud_pct": 0.0}, {"r": "Закрияхужаев Махмудхон Муродхон Угли", "t": "Андреев Михаил (Торговый New)", "acts": 6, "fraud": 0, "fraud_pct": 0.0}, {"r": "Зименков Сергей Валерьевич", "t": "Бузина Яна (Руководитель проекта New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "КУРБАНОВА СЕВИНДЖ ЭЛХАН КЫЗЫ", "t": "Леонов Михаил (Проект Коробочка)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Минаков Владимир Леонидович", "t": "Переверзев Виталий (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Султалиев Алик Казиметович", "t": "Боев Дмитрий  (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Султонов Рахимджон Курбанович", "t": "Переверзев Виталий (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Адильханов Эльдар Русланович", "t": "Боев Дмитрий  (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Крюков Алексей Юрьевич", "t": "Переверзев Виталий (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "МАКЯН СЕРГЕЙ", "t": "Переверзев Виталий (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мкртчян Вазген Володяевич", "t": "Батурин Павел Юрьевич (СМ)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Резепов Евгений Федорович", "t": "Переверзев Виталий (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Сайипов Ахмадилло", "t": "Доброхотов Владислав Игоревич (СМ)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Тырин Александр Михайлович", "t": "Боев Дмитрий  (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Чумазода Имрон Илхомуддин", "t": "Андреев Михаил (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Якубов Рамиль Шафекович", "t": "Переверзев Виталий (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "кривошеин ярослав петрович", "t": "Переверзев Виталий (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "АБАКАРОВ АРТУР КУРБАНИСМАИЛОВИЧ", "t": "Переверзев Виталий (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "АГАБАБЯН ДАВИД РАШИДОВИЧ", "t": "Юрлов Александр", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "АСРЯН ВАГАН ВАЛЕРИКОВИЧ", "t": "Тупиков Станислав (ФЖ)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Байрамов Амиль Логман Оглы", "t": "Переверзев Виталий (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Батчаев Альберт Русланович", "t": "Переверзев Виталий (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Гурьянов Алексей Алексеевич", "t": "Юрлов Александр", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Казбеков Магомед-Салах Магомедович", "t": "Переверзев Виталий (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "МАЛАЕВ МАГОМЕД НАЖМУДИНОВИЧ", "t": "Переверзев Виталий (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мавлонов Уткир", "t": "Тупиков Станислав (ФЖ)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мовсисян Арнак Карапетович", "t": "Переверзев Виталий (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Найминова Лина Батровна", "t": "Бакытов Бекжан (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Расулов Дадажон Маруфович", "t": "Переверзев Виталий (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Рублев Данила Олегович", "t": "Переверзев Виталий (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "СУМИН МИХАИЛ ВАЛЕРЕЬВИЧ", "t": "Переверзев Виталий (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Сазонов Александр Константинович", "t": "Тупиков Станислав (ФЖ)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Толебаева Жанара Толебаевна", "t": "Юрлов Александр", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Худинян Тигран Вазгенович", "t": "Бакытов Бекжан (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Царева Светлана Владимировна", "t": "Бакытов Бекжан (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "ШИШХАЕВ АБУБАКАР-СИДИК МАГОМЕДОВИЧ", "t": "Переверзев Виталий (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Шинаев Вячеслав Викторович", "t": "Арен Дуринян (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Юдин Алексей Дмитриевич", "t": "Тупиков Станислав (ФЖ)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Ахмадов Малик Адланович", "t": "Боев Дмитрий  (Торговый New)", "acts": 2, "fraud": 0, "fraud_pct": 0.0}, {"r": "Васильев Алексей Александрович", "t": "Андреев Михаил (Торговый New)", "acts": 2, "fraud": 0, "fraud_pct": 0.0}, {"r": "ГАФУРОВ ВИТАЛИЙ ВИКТОРОВИЧ", "t": "Заяц Артем Викторович (СМ)", "acts": 2, "fraud": 0, "fraud_pct": 0.0}, {"r": "Гармалюк Михаил Борисович", "t": "Боев Дмитрий  (Торговый New)", "acts": 2, "fraud": 0, "fraud_pct": 0.0}, {"r": "Дехконов Руфатжон Рустамбаевич", "t": "Переверзев Виталий (Торговый New)", "acts": 2, "fraud": 0, "fraud_pct": 0.0}, {"r": "Ерманов Марат Равильевич", "t": "Андреев Михаил (Торговый New)", "acts": 2, "fraud": 0, "fraud_pct": 0.0}], "ops": {"Билайн": 519, "Мегафон": 474, "МТС": 83, "Yota": 43, "Tele2": 20}}, "2026-05": {"total": 1542, "ap": 213, "p3": 97, "p10": 35, "avg": 7.2, "fraud": 383, "fraud_pct": 24.8, "tp": [{"name": "Переверзев Виталий (Торговый New)", "acts": 776, "partners": 67, "p3": 31, "p10": 16, "fraud": 382, "fraud_pct": 49.2}, {"name": "Боев Дмитрий  (Торговый New)", "acts": 135, "partners": 17, "p3": 13, "p10": 4, "fraud": 0, "fraud_pct": 0.0}, {"name": "Андреев Михаил (Торговый New)", "acts": 130, "partners": 28, "p3": 11, "p10": 3, "fraud": 0, "fraud_pct": 0.0}, {"name": "Леонов Михаил (Проект Коробочка)", "acts": 99, "partners": 11, "p3": 9, "p10": 3, "fraud": 0, "fraud_pct": 0.0}, {"name": "Бакытов Бекжан (Торговый New)", "acts": 83, "partners": 11, "p3": 5, "p10": 2, "fraud": 0, "fraud_pct": 0.0}, {"name": "Юрлов Александр", "acts": 53, "partners": 17, "p3": 5, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Бузина Яна (Руководитель проекта New)", "acts": 47, "partners": 3, "p3": 2, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Мокров Евгений  (Торговый New)", "acts": 41, "partners": 8, "p3": 1, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Тупиков Станислав (ФЖ)", "acts": 24, "partners": 5, "p3": 5, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Заяц Артем Викторович (СМ)", "acts": 21, "partners": 4, "p3": 4, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Арен Дуринян (Торговый New)", "acts": 20, "partners": 7, "p3": 3, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Аверин Алексей Владимирович (СМ)", "acts": 15, "partners": 2, "p3": 1, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Фролов Станислав (Проект Коробочка)", "acts": 15, "partners": 9, "p3": 1, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Кувшинова Зоя Александровна (СМ)", "acts": 5, "partners": 1, "p3": 1, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Кузьмина Светлана (Торговый NEW)", "acts": 4, "partners": 3, "p3": 0, "p10": 0, "fraud": 1, "fraud_pct": 25.0}, {"name": "Батурин Павел Юрьевич (СМ)", "acts": 3, "partners": 1, "p3": 1, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Гришин Александр Сергеевич (СМ)", "acts": 3, "partners": 2, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Правоторов Владимир Михайлович (СМ)", "acts": 3, "partners": 3, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Ефимов Алексей Андреевич (СМ)", "acts": 1, "partners": 1, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Немков Владимир (Торговый NEW)", "acts": 1, "partners": 1, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Нестерова Ирина Петровна (СМ)", "acts": 1, "partners": 1, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Шкуренков Алексей Александрович (СМ)", "acts": 1, "partners": 1, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Шкуренкова Надежда (Торговый new)", "acts": 1, "partners": 1, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}], "partners": [{"r": "Маляев Илья Алексеевич", "t": "Переверзев Виталий (Торговый New)", "acts": 322, "fraud": 322, "fraud_pct": 100.0}, {"r": "Оздамиров Ибрагим Адамович", "t": "Переверзев Виталий (Торговый New)", "acts": 59, "fraud": 0, "fraud_pct": 0.0}, {"r": "КАГИРОВ Рамзан Ильясович", "t": "Бакытов Бекжан (Торговый New)", "acts": 52, "fraud": 0, "fraud_pct": 0.0}, {"r": "Самуйло Дмитрий Евгеньевич", "t": "Переверзев Виталий (Торговый New)", "acts": 51, "fraud": 51, "fraud_pct": 100.0}, {"r": "ОРАЖУКХОНОВ УЛУГБЕК", "t": "Леонов Михаил (Проект Коробочка)", "acts": 50, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мамадзада Джаваншир", "t": "Андреев Михаил (Торговый New)", "acts": 49, "fraud": 0, "fraud_pct": 0.0}, {"r": "Семенюк Александр Владимирович", "t": "Переверзев Виталий (Торговый New)", "acts": 44, "fraud": 0, "fraud_pct": 0.0}, {"r": "Тагиева Вафа Натик Кызы", "t": "Бузина Яна (Руководитель проекта New)", "acts": 40, "fraud": 0, "fraud_pct": 0.0}, {"r": "Ахмедов Бабек Несюрович", "t": "Мокров Евгений  (Торговый New)", "acts": 32, "fraud": 0, "fraud_pct": 0.0}, {"r": "Колтун Станислав Сергеевич", "t": "Переверзев Виталий (Торговый New)", "acts": 32, "fraud": 0, "fraud_pct": 0.0}, {"r": "Алексеева Ирина Николаевна", "t": "Переверзев Виталий (Торговый New)", "acts": 30, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мирзаметов Абубукар Мирзаметович", "t": "Боев Дмитрий  (Торговый New)", "acts": 30, "fraud": 0, "fraud_pct": 0.0}, {"r": "Исраилова Розана Магомедсамиевна", "t": "Боев Дмитрий  (Торговый New)", "acts": 28, "fraud": 0, "fraud_pct": 0.0}, {"r": "Рублев Данила Олегович", "t": "Переверзев Виталий (Торговый New)", "acts": 26, "fraud": 0, "fraud_pct": 0.0}, {"r": "Соловьева Алеся", "t": "Боев Дмитрий  (Торговый New)", "acts": 21, "fraud": 0, "fraud_pct": 0.0}, {"r": "Лазинина Александра Сергеевна", "t": "Переверзев Виталий (Торговый New)", "acts": 17, "fraud": 0, "fraud_pct": 0.0}, {"r": "JAFAROV HUSEYN", "t": "Леонов Михаил (Проект Коробочка)", "acts": 14, "fraud": 0, "fraud_pct": 0.0}, {"r": "Гаджиев Рустам Поладович", "t": "Аверин Алексей Владимирович (СМ)", "acts": 14, "fraud": 0, "fraud_pct": 0.0}, {"r": "Тырин Александр Михайлович", "t": "Боев Дмитрий  (Торговый New)", "acts": 14, "fraud": 0, "fraud_pct": 0.0}, {"r": "Карпенков Евгений Олегович", "t": "Леонов Михаил (Проект Коробочка)", "acts": 13, "fraud": 0, "fraud_pct": 0.0}, {"r": "Аскеров Эльнур Акиф оглы", "t": "Андреев Михаил (Торговый New)", "acts": 12, "fraud": 0, "fraud_pct": 0.0}, {"r": "ВОЛКОВ СЕРГЕЙ АЛЕКСАНДРОВИЧ", "t": "Юрлов Александр", "acts": 12, "fraud": 0, "fraud_pct": 0.0}, {"r": "ГАФУРОВ ВИТАЛИЙ ВИКТОРОВИЧ", "t": "Заяц Артем Викторович (СМ)", "acts": 12, "fraud": 0, "fraud_pct": 0.0}, {"r": "Резепов Евгений Федорович", "t": "Переверзев Виталий (Торговый New)", "acts": 12, "fraud": 0, "fraud_pct": 0.0}, {"r": "Худяков Юрий Александрович", "t": "Переверзев Виталий (Торговый New)", "acts": 12, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мельниченко Дмитрий Валентинович", "t": "Андреев Михаил (Торговый New)", "acts": 11, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мовсисян Арнак Карапетович", "t": "Переверзев Виталий (Торговый New)", "acts": 11, "fraud": 0, "fraud_pct": 0.0}, {"r": "Найминова Лина Батровна", "t": "Бакытов Бекжан (Торговый New)", "acts": 11, "fraud": 0, "fraud_pct": 0.0}, {"r": "Байрамов Амиль Логман Оглы", "t": "Переверзев Виталий (Торговый New)", "acts": 10, "fraud": 0, "fraud_pct": 0.0}, {"r": "Долженков Валентин Александрович", "t": "Переверзев Виталий (Торговый New)", "acts": 10, "fraud": 0, "fraud_pct": 0.0}, {"r": "Закриев Усман Зелимханович", "t": "Переверзев Виталий (Торговый New)", "acts": 10, "fraud": 0, "fraud_pct": 0.0}, {"r": "Смирнова Марина Владимирован", "t": "Тупиков Станислав (ФЖ)", "acts": 10, "fraud": 0, "fraud_pct": 0.0}, {"r": "Тагизаде Ильгар Бахадыр Оглы", "t": "Переверзев Виталий (Торговый New)", "acts": 10, "fraud": 0, "fraud_pct": 0.0}, {"r": "ШИШХАЕВ АБУБАКАР-СИДИК МАГОМЕДОВИЧ", "t": "Переверзев Виталий (Торговый New)", "acts": 10, "fraud": 0, "fraud_pct": 0.0}, {"r": "Дехконов Руфатжон Рустамбаевич", "t": "Переверзев Виталий (Торговый New)", "acts": 8, "fraud": 0, "fraud_pct": 0.0}, {"r": "Дадаев Магомед Вахаевич", "t": "Боев Дмитрий  (Торговый New)", "acts": 7, "fraud": 0, "fraud_pct": 0.0}, {"r": "Исаев Вячеслав Александрович", "t": "Переверзев Виталий (Торговый New)", "acts": 7, "fraud": 0, "fraud_pct": 0.0}, {"r": "Исаков Яниддин Играмудинович", "t": "Юрлов Александр", "acts": 7, "fraud": 0, "fraud_pct": 0.0}, {"r": "Оганян Эдгар Суренович", "t": "Юрлов Александр", "acts": 7, "fraud": 0, "fraud_pct": 0.0}, {"r": "Рахимов Ахмаджон Рузибой Угли", "t": "Андреев Михаил (Торговый New)", "acts": 7, "fraud": 0, "fraud_pct": 0.0}, {"r": "Сиворатченко Дмитрий Андреевич", "t": "Переверзев Виталий (Торговый New)", "acts": 7, "fraud": 0, "fraud_pct": 0.0}, {"r": "Толебаева Жанара Толебаевна", "t": "Юрлов Александр", "acts": 7, "fraud": 0, "fraud_pct": 0.0}, {"r": "Худинян Тигран Вазгенович", "t": "Бакытов Бекжан (Торговый New)", "acts": 7, "fraud": 0, "fraud_pct": 0.0}, {"r": "Ахмедов Адхамжон Нематжон Угли", "t": "Андреев Михаил (Торговый New)", "acts": 6, "fraud": 0, "fraud_pct": 0.0}, {"r": "Зименков Сергей Валерьевич", "t": "Бузина Яна (Руководитель проекта New)", "acts": 6, "fraud": 0, "fraud_pct": 0.0}, {"r": "Иброхимов Исроил", "t": "Фролов Станислав (Проект Коробочка)", "acts": 6, "fraud": 0, "fraud_pct": 0.0}, {"r": "Адильханов Эльдар Русланович", "t": "Боев Дмитрий  (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Гафуров Дилшод Рахмонбердиевич", "t": "Андреев Михаил (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Кунупов Роман Михайлович", "t": "Боев Дмитрий  (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "СЕМЕНОВ СЕРГЕЙ АЛЕКСАНДРОВИЧ", "t": "Кувшинова Зоя Александровна (СМ)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Шинаев Вячеслав Викторович", "t": "Арен Дуринян (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "АСРЯН ВАГАН ВАЛЕРИКОВИЧ", "t": "Тупиков Станислав (ФЖ)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Азарян Сурен Каренович", "t": "Леонов Михаил (Проект Коробочка)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Альборов Амир Асланбиевич", "t": "Переверзев Виталий (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Ахмадов Малик Адланович", "t": "Боев Дмитрий  (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Басаев Анвар Сайд-Эмиевич", "t": "Переверзев Виталий (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Гусейнов Рашад Адиль Оглы", "t": "Андреев Михаил (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Дуринян Мартин Варданович", "t": "Арен Дуринян (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Ефимов Александр Павлович", "t": "Переверзев Виталий (Торговый New)", "acts": 4, "fraud": 4, "fraud_pct": 100.0}, {"r": "МАКЯН СЕРГЕЙ", "t": "Переверзев Виталий (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Раббимкулов Камолджон Комилзхонович", "t": "Арен Дуринян (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Расулов Дадажон Маруфович", "t": "Переверзев Виталий (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Ремонтов Андрей Олегович", "t": "Переверзев Виталий (Торговый New)", "acts": 4, "fraud": 4, "fraud_pct": 100.0}, {"r": "Султалиев Алик Казиметович", "t": "Боев Дмитрий  (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "ЮСУПОВ ОРТИК САМАНДАРОВИЧ", "t": "Переверзев Виталий (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Юдин Алексей Дмитриевич", "t": "Тупиков Станислав (ФЖ)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "кривошеин ярослав петрович", "t": "Переверзев Виталий (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Айвазов Мехди Бахтияр Оглы", "t": "Юрлов Александр", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Алимардонов Мухаммадали Джурабекович", "t": "Заяц Артем Викторович (СМ)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Ахмаджонов Иброхимжон Илхомжонович", "t": "Андреев Михаил (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "БОЕВ ДАНИИЛ ЕВГЕНЬЕВИЧ", "t": "Боев Дмитрий  (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Васильев Алексей Александрович", "t": "Андреев Михаил (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Григорян Арман", "t": "Бакытов Бекжан (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Гусейнли Ахмед Алихан Оглы", "t": "Леонов Михаил (Проект Коробочка)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Исматов Умар Саидшохович", "t": "Переверзев Виталий (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Карачев Муршид Мирзаевич", "t": "Леонов Михаил (Проект Коробочка)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Колосов Дмитрий Валерьевич", "t": "Батурин Павел Юрьевич (СМ)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Леонов Михаил Анатольевич", "t": "Леонов Михаил (Проект Коробочка)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Леонова Анастасия Арифовна", "t": "Леонов Михаил (Проект Коробочка)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мирошниченко Артем Геннадьевич", "t": "Переверзев Виталий (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}], "ops": {"Мегафон": 611, "Билайн": 533, "МТС": 242, "Yota": 124, "Tele2": 32}}, "2026-04": {"total": 1287, "ap": 215, "p3": 116, "p10": 28, "avg": 6.0, "fraud": 111, "fraud_pct": 8.6, "tp": [{"name": "Переверзев Виталий (Торговый New)", "acts": 531, "partners": 66, "p3": 35, "p10": 14, "fraud": 105, "fraud_pct": 19.8}, {"name": "Боев Дмитрий  (Торговый New)", "acts": 131, "partners": 18, "p3": 13, "p10": 4, "fraud": 0, "fraud_pct": 0.0}, {"name": "Андреев Михаил (Торговый New)", "acts": 91, "partners": 22, "p3": 11, "p10": 2, "fraud": 0, "fraud_pct": 0.0}, {"name": "Леонов Михаил (Проект Коробочка)", "acts": 91, "partners": 11, "p3": 7, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Бакытов Бекжан (Торговый New)", "acts": 76, "partners": 13, "p3": 8, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Бузина Яна (Руководитель проекта New)", "acts": 66, "partners": 4, "p3": 3, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Юрлов Александр", "acts": 64, "partners": 15, "p3": 7, "p10": 2, "fraud": 0, "fraud_pct": 0.0}, {"name": "Фролов Станислав (Проект Коробочка)", "acts": 30, "partners": 12, "p3": 4, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Тупиков Станислав (ФЖ)", "acts": 24, "partners": 5, "p3": 5, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Правоторов Владимир Михайлович (СМ)", "acts": 23, "partners": 6, "p3": 4, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Мокров Евгений  (Торговый New)", "acts": 18, "partners": 5, "p3": 2, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Заяц Артем Викторович (СМ)", "acts": 14, "partners": 4, "p3": 3, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Аверин Алексей Владимирович (СМ)", "acts": 12, "partners": 3, "p3": 3, "p10": 0, "fraud": 6, "fraud_pct": 50.0}, {"name": "Гришин Александр Сергеевич (СМ)", "acts": 12, "partners": 2, "p3": 2, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Арен Дуринян (Торговый New)", "acts": 11, "partners": 4, "p3": 2, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Доброхотов Владислав Игоревич (СМ)", "acts": 8, "partners": 1, "p3": 1, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Ефимов Алексей Андреевич (СМ)", "acts": 3, "partners": 1, "p3": 1, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Батурин Павел Юрьевич (СМ)", "acts": 2, "partners": 2, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Федосеева Мария Павловна (СМ)", "acts": 2, "partners": 2, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Афанаскин Николай (Tele2 new)", "acts": 1, "partners": 1, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Бакытов Бекжан Бакытович (СМ)", "acts": 1, "partners": 1, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Ефимов Алексей (Tele2 new)", "acts": 1, "partners": 1, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Кузьмина Светлана (Торговый NEW)", "acts": 1, "partners": 1, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Немков Владимир (Торговый NEW)", "acts": 1, "partners": 1, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Нестерова Ирина Петровна (СМ)", "acts": 1, "partners": 1, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Шкуренков Алексей Александрович (СМ)", "acts": 1, "partners": 1, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}], "partners": [{"r": "Маляев Илья Алексеевич", "t": "Переверзев Виталий (Торговый New)", "acts": 105, "fraud": 105, "fraud_pct": 100.0}, {"r": "ОРАЖУКХОНОВ УЛУГБЕК", "t": "Леонов Михаил (Проект Коробочка)", "acts": 68, "fraud": 0, "fraud_pct": 0.0}, {"r": "Оздамиров Ибрагим Адамович", "t": "Переверзев Виталий (Торговый New)", "acts": 65, "fraud": 0, "fraud_pct": 0.0}, {"r": "Тагиева Вафа Натик Кызы", "t": "Бузина Яна (Руководитель проекта New)", "acts": 54, "fraud": 0, "fraud_pct": 0.0}, {"r": "Колтун Станислав Сергеевич", "t": "Переверзев Виталий (Торговый New)", "acts": 41, "fraud": 0, "fraud_pct": 0.0}, {"r": "КАГИРОВ Рамзан Ильясович", "t": "Бакытов Бекжан (Торговый New)", "acts": 35, "fraud": 0, "fraud_pct": 0.0}, {"r": "Тырин Александр Михайлович", "t": "Боев Дмитрий  (Торговый New)", "acts": 34, "fraud": 0, "fraud_pct": 0.0}, {"r": "Алексеева Ирина Николаевна", "t": "Переверзев Виталий (Торговый New)", "acts": 28, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мамадзада Джаваншир", "t": "Андреев Михаил (Торговый New)", "acts": 27, "fraud": 0, "fraud_pct": 0.0}, {"r": "Семенюк Александр Владимирович", "t": "Переверзев Виталий (Торговый New)", "acts": 26, "fraud": 0, "fraud_pct": 0.0}, {"r": "Соловьева Алеся", "t": "Боев Дмитрий  (Торговый New)", "acts": 26, "fraud": 0, "fraud_pct": 0.0}, {"r": "Гурьянов Алексей Алексеевич", "t": "Юрлов Александр", "acts": 19, "fraud": 0, "fraud_pct": 0.0}, {"r": "Дадаев Магомед Вахаевич", "t": "Боев Дмитрий  (Торговый New)", "acts": 19, "fraud": 0, "fraud_pct": 0.0}, {"r": "ВОЛКОВ СЕРГЕЙ АЛЕКСАНДРОВИЧ", "t": "Юрлов Александр", "acts": 17, "fraud": 0, "fraud_pct": 0.0}, {"r": "Тагизаде Ильгар Бахадыр Оглы", "t": "Переверзев Виталий (Торговый New)", "acts": 17, "fraud": 0, "fraud_pct": 0.0}, {"r": "кривошеин ярослав петрович", "t": "Переверзев Виталий (Торговый New)", "acts": 17, "fraud": 0, "fraud_pct": 0.0}, {"r": "Казбеков Магомед-Салах Магомедович", "t": "Переверзев Виталий (Торговый New)", "acts": 15, "fraud": 0, "fraud_pct": 0.0}, {"r": "Исаев Вячеслав Александрович", "t": "Переверзев Виталий (Торговый New)", "acts": 13, "fraud": 0, "fraud_pct": 0.0}, {"r": "Батчаев Альберт Русланович", "t": "Переверзев Виталий (Торговый New)", "acts": 12, "fraud": 0, "fraud_pct": 0.0}, {"r": "Смирнова Марина Владимирован", "t": "Тупиков Станислав (ФЖ)", "acts": 12, "fraud": 0, "fraud_pct": 0.0}, {"r": "Худяков Юрий Александрович", "t": "Переверзев Виталий (Торговый New)", "acts": 12, "fraud": 0, "fraud_pct": 0.0}, {"r": "Ахмедов Бабек Несюрович", "t": "Мокров Евгений  (Торговый New)", "acts": 11, "fraud": 0, "fraud_pct": 0.0}, {"r": "Закриев Усман Зелимханович", "t": "Переверзев Виталий (Торговый New)", "acts": 11, "fraud": 0, "fraud_pct": 0.0}, {"r": "Исраилова Розана Магомедсамиевна", "t": "Боев Дмитрий  (Торговый New)", "acts": 11, "fraud": 0, "fraud_pct": 0.0}, {"r": "Лазинина Александра Сергеевна", "t": "Переверзев Виталий (Торговый New)", "acts": 11, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мельниченко Дмитрий Валентинович", "t": "Андреев Михаил (Торговый New)", "acts": 11, "fraud": 0, "fraud_pct": 0.0}, {"r": "Резепов Евгений Федорович", "t": "Переверзев Виталий (Торговый New)", "acts": 10, "fraud": 0, "fraud_pct": 0.0}, {"r": "AKBARKHONOV MIRGULSHANKHON MAMADALIKHON UGLI", "t": "Бакытов Бекжан (Торговый New)", "acts": 9, "fraud": 0, "fraud_pct": 0.0}, {"r": "Аскеров Эльнур Акиф оглы", "t": "Андреев Михаил (Торговый New)", "acts": 9, "fraud": 0, "fraud_pct": 0.0}, {"r": "Исмоилов Собирхон Собитхон Угли", "t": "Гришин Александр Сергеевич (СМ)", "acts": 9, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мамедов Фарид Фидаил оглы", "t": "Правоторов Владимир Михайлович (СМ)", "acts": 9, "fraud": 0, "fraud_pct": 0.0}, {"r": "Зименков Сергей Валерьевич", "t": "Бузина Яна (Руководитель проекта New)", "acts": 8, "fraud": 0, "fraud_pct": 0.0}, {"r": "Манаева Луиза Хароновна", "t": "Переверзев Виталий (Торговый New)", "acts": 8, "fraud": 0, "fraud_pct": 0.0}, {"r": "Обидхонов Нурмукхамад", "t": "Доброхотов Владислав Игоревич (СМ)", "acts": 8, "fraud": 0, "fraud_pct": 0.0}, {"r": "Рагимов Шамкир Ширали оглы", "t": "Переверзев Виталий (Торговый New)", "acts": 8, "fraud": 0, "fraud_pct": 0.0}, {"r": "Худинян Тигран Вазгенович", "t": "Бакытов Бекжан (Торговый New)", "acts": 8, "fraud": 0, "fraud_pct": 0.0}, {"r": "Альборов Амир Асланбиевич", "t": "Переверзев Виталий (Торговый New)", "acts": 7, "fraud": 0, "fraud_pct": 0.0}, {"r": "Байрамов Амиль Логман Оглы", "t": "Переверзев Виталий (Торговый New)", "acts": 7, "fraud": 0, "fraud_pct": 0.0}, {"r": "ГАФУРОВ ВИТАЛИЙ ВИКТОРОВИЧ", "t": "Заяц Артем Викторович (СМ)", "acts": 7, "fraud": 0, "fraud_pct": 0.0}, {"r": "Новиков Сергей Сергеевич", "t": "Фролов Станислав (Проект Коробочка)", "acts": 7, "fraud": 0, "fraud_pct": 0.0}, {"r": "Аверин Алексей Владимирович", "t": "Аверин Алексей Владимирович (СМ)", "acts": 6, "fraud": 6, "fraud_pct": 100.0}, {"r": "Ахмаджонов Иброхимжон Илхомжонович", "t": "Андреев Михаил (Торговый New)", "acts": 6, "fraud": 0, "fraud_pct": 0.0}, {"r": "Долженков Валентин Александрович", "t": "Переверзев Виталий (Торговый New)", "acts": 6, "fraud": 0, "fraud_pct": 0.0}, {"r": "Крюков Алексей Юрьевич", "t": "Переверзев Виталий (Торговый New)", "acts": 6, "fraud": 0, "fraud_pct": 0.0}, {"r": "Пушкарёв Владимир Сергеевич", "t": "Боев Дмитрий  (Торговый New)", "acts": 6, "fraud": 0, "fraud_pct": 0.0}, {"r": "Якубов Рамиль Шафекович", "t": "Переверзев Виталий (Торговый New)", "acts": 6, "fraud": 0, "fraud_pct": 0.0}, {"r": "Абу Зияд Надер Абдаллах", "t": "Фролов Станислав (Проект Коробочка)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Ибрагимов Зафар Рахмонович", "t": "Переверзев Виталий (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Иброхимов Исроил", "t": "Фролов Станислав (Проект Коробочка)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "КЛООС РОМАН ВЛАДИМИРОВИЧ", "t": "Переверзев Виталий (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Найминова Лина Батровна", "t": "Бакытов Бекжан (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Рублев Данила Олегович", "t": "Переверзев Виталий (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Толебаева Жанара Толебаевна", "t": "Юрлов Александр", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "ХРИСАНОВ Вячеслав Владимирович", "t": "Переверзев Виталий (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Хорева Елена Владимировна", "t": "Правоторов Владимир Михайлович (СМ)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Худяков Александр Александрович", "t": "Переверзев Виталий (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "ШИШХАЕВ АБУБАКАР-СИДИК МАГОМЕДОВИЧ", "t": "Переверзев Виталий (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "ЮСУПОВ ОРТИК САМАНДАРОВИЧ", "t": "Переверзев Виталий (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Абдуллоев Хикматулло Абдумаликович", "t": "Боев Дмитрий  (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Айвазов Мехди Бахтияр Оглы", "t": "Юрлов Александр", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Алиев Расамбек Ибрагимович", "t": "Боев Дмитрий  (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Ардабаев Сино Алиевич", "t": "Переверзев Виталий (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Асланов Дамир Энверович", "t": "Леонов Михаил (Проект Коробочка)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Ахмедов Адхамжон Нематжон Угли", "t": "Андреев Михаил (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Испирян Гайк Вараздатович", "t": "Бакытов Бекжан (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Краснов Станислав Русланович", "t": "Переверзев Виталий (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "МЕЛЬНИЧЕНКО АЛЕКСЕЙ НИКОЛАЕВИЧ", "t": "Боев Дмитрий  (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мирзаметов Абубукар Мирзаметович", "t": "Боев Дмитрий  (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мусоев Умед Содикович", "t": "Андреев Михаил (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Павликова Виктория Алимжановна", "t": "Фролов Станислав (Проект Коробочка)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Сидякин Александр Викторович", "t": "Арен Дуринян (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Суяров Баходур Бурихонович", "t": "Правоторов Владимир Михайлович (СМ)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "JAFAROV HUSEYN", "t": "Леонов Михаил (Проект Коробочка)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "АСРЯН ВАГАН ВАЛЕРИКОВИЧ", "t": "Тупиков Станислав (ФЖ)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Агаджанян Дорвард Арамович", "t": "Боев Дмитрий  (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Адильханов Эльдар Русланович", "t": "Боев Дмитрий  (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Азарян Сурен Каренович", "t": "Леонов Михаил (Проект Коробочка)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Александрова Анна Викторовна", "t": "Мокров Евгений  (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Алимардонов Мухаммадали Джурабекович", "t": "Заяц Артем Викторович (СМ)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Аракелян Манук", "t": "Аверин Алексей Владимирович (СМ)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}], "ops": {"Билайн": 626, "Мегафон": 311, "Yota": 165, "МТС": 130, "Tele2": 55}}, "2026-03": {"total": 1366, "ap": 215, "p3": 110, "p10": 35, "avg": 6.4, "fraud": 58, "fraud_pct": 4.2, "tp": [{"name": "Переверзев Виталий (Торговый New)", "acts": 481, "partners": 64, "p3": 40, "p10": 12, "fraud": 48, "fraud_pct": 10.0}, {"name": "Боев Дмитрий  (Торговый New)", "acts": 190, "partners": 17, "p3": 11, "p10": 7, "fraud": 0, "fraud_pct": 0.0}, {"name": "Бузина Яна (Руководитель проекта New)", "acts": 99, "partners": 3, "p3": 1, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Андреев Михаил (Торговый New)", "acts": 82, "partners": 20, "p3": 10, "p10": 3, "fraud": 0, "fraud_pct": 0.0}, {"name": "Бакытов Бекжан (Торговый New)", "acts": 77, "partners": 14, "p3": 6, "p10": 3, "fraud": 0, "fraud_pct": 0.0}, {"name": "Леонов Михаил (Проект Коробочка)", "acts": 76, "partners": 10, "p3": 5, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Юрлов Александр", "acts": 58, "partners": 14, "p3": 7, "p10": 2, "fraud": 0, "fraud_pct": 0.0}, {"name": "Мокров Евгений  (Торговый New)", "acts": 41, "partners": 9, "p3": 3, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Правоторов Владимир Михайлович (СМ)", "acts": 30, "partners": 6, "p3": 4, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Тупиков Станислав (ФЖ)", "acts": 24, "partners": 5, "p3": 4, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Федосеева Мария Павловна (СМ)", "acts": 20, "partners": 4, "p3": 3, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Арен Дуринян (Торговый New)", "acts": 19, "partners": 8, "p3": 2, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Фролов Станислав (Проект Коробочка)", "acts": 19, "partners": 8, "p3": 4, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Батурин Павел Юрьевич (СМ)", "acts": 16, "partners": 3, "p3": 2, "p10": 1, "fraud": 0, "fraud_pct": 0.0}, {"name": "Аверин Алексей Владимирович (СМ)", "acts": 10, "partners": 1, "p3": 1, "p10": 1, "fraud": 10, "fraud_pct": 100.0}, {"name": "Ефимов Алексей Андреевич (СМ)", "acts": 9, "partners": 2, "p3": 1, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Шкуренков Алексей Александрович (СМ)", "acts": 8, "partners": 1, "p3": 1, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Кузьмина Светлана (Торговый NEW)", "acts": 4, "partners": 4, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Доброхотов Владислав Игоревич (СМ)", "acts": 3, "partners": 2, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Заяц Артем Викторович (СМ)", "acts": 2, "partners": 2, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Бакытов Бекжан Бакытович (СМ)", "acts": 1, "partners": 1, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Немков Владимир (Торговый NEW)", "acts": 1, "partners": 1, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Сторожев Никита  (Торговый New)", "acts": 1, "partners": 1, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}, {"name": "Шкуренкова Надежда (Торговый new)", "acts": 1, "partners": 1, "p3": 0, "p10": 0, "fraud": 0, "fraud_pct": 0.0}], "partners": [{"r": "Тагиева Вафа Натик Кызы", "t": "Бузина Яна (Руководитель проекта New)", "acts": 97, "fraud": 0, "fraud_pct": 0.0}, {"r": "Оздамиров Ибрагим Адамович", "t": "Переверзев Виталий (Торговый New)", "acts": 61, "fraud": 0, "fraud_pct": 0.0}, {"r": "ОРАЖУКХОНОВ УЛУГБЕК", "t": "Леонов Михаил (Проект Коробочка)", "acts": 59, "fraud": 0, "fraud_pct": 0.0}, {"r": "Тырин Александр Михайлович", "t": "Боев Дмитрий  (Торговый New)", "acts": 55, "fraud": 0, "fraud_pct": 0.0}, {"r": "Семенюк Александр Владимирович", "t": "Переверзев Виталий (Торговый New)", "acts": 48, "fraud": 0, "fraud_pct": 0.0}, {"r": "Маляев Илья Алексеевич", "t": "Переверзев Виталий (Торговый New)", "acts": 43, "fraud": 43, "fraud_pct": 100.0}, {"r": "Соловьева Алеся", "t": "Боев Дмитрий  (Торговый New)", "acts": 33, "fraud": 0, "fraud_pct": 0.0}, {"r": "Ахмедов Бабек Несюрович", "t": "Мокров Евгений  (Торговый New)", "acts": 27, "fraud": 0, "fraud_pct": 0.0}, {"r": "КАГИРОВ Рамзан Ильясович", "t": "Бакытов Бекжан (Торговый New)", "acts": 27, "fraud": 0, "fraud_pct": 0.0}, {"r": "кривошеин ярослав петрович", "t": "Переверзев Виталий (Торговый New)", "acts": 24, "fraud": 0, "fraud_pct": 0.0}, {"r": "Исраилова Розана Магомедсамиевна", "t": "Боев Дмитрий  (Торговый New)", "acts": 23, "fraud": 0, "fraud_pct": 0.0}, {"r": "Колтун Станислав Сергеевич", "t": "Переверзев Виталий (Торговый New)", "acts": 23, "fraud": 0, "fraud_pct": 0.0}, {"r": "Тагизаде Ильгар Бахадыр Оглы", "t": "Переверзев Виталий (Торговый New)", "acts": 22, "fraud": 0, "fraud_pct": 0.0}, {"r": "Алексеева Ирина Николаевна", "t": "Переверзев Виталий (Торговый New)", "acts": 21, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мамадзада Джаваншир", "t": "Андреев Михаил (Торговый New)", "acts": 20, "fraud": 0, "fraud_pct": 0.0}, {"r": "Худяков Александр Александрович", "t": "Переверзев Виталий (Торговый New)", "acts": 17, "fraud": 0, "fraud_pct": 0.0}, {"r": "Гурьянов Алексей Алексеевич", "t": "Юрлов Александр", "acts": 16, "fraud": 0, "fraud_pct": 0.0}, {"r": "Резепов Евгений Федорович", "t": "Переверзев Виталий (Торговый New)", "acts": 16, "fraud": 0, "fraud_pct": 0.0}, {"r": "Дадаев Магомед Вахаевич", "t": "Боев Дмитрий  (Торговый New)", "acts": 15, "fraud": 0, "fraud_pct": 0.0}, {"r": "AKBARKHONOV MIRGULSHANKHON MAMADALIKHON UGLI", "t": "Бакытов Бекжан (Торговый New)", "acts": 14, "fraud": 0, "fraud_pct": 0.0}, {"r": "Смирнова Марина Владимирован", "t": "Тупиков Станислав (ФЖ)", "acts": 14, "fraud": 0, "fraud_pct": 0.0}, {"r": "Исаев Вячеслав Александрович", "t": "Переверзев Виталий (Торговый New)", "acts": 13, "fraud": 0, "fraud_pct": 0.0}, {"r": "Аскеров Эльнур Акиф оглы", "t": "Андреев Михаил (Торговый New)", "acts": 12, "fraud": 0, "fraud_pct": 0.0}, {"r": "Байрамов Амиль Логман Оглы", "t": "Переверзев Виталий (Торговый New)", "acts": 12, "fraud": 0, "fraud_pct": 0.0}, {"r": "Пушкарёв Владимир Сергеевич", "t": "Боев Дмитрий  (Торговый New)", "acts": 12, "fraud": 0, "fraud_pct": 0.0}, {"r": "Худинян Тигран Вазгенович", "t": "Бакытов Бекжан (Торговый New)", "acts": 12, "fraud": 0, "fraud_pct": 0.0}, {"r": "Адильханов Эльдар Русланович", "t": "Боев Дмитрий  (Торговый New)", "acts": 11, "fraud": 0, "fraud_pct": 0.0}, {"r": "Бадалян Давит Сергеевич", "t": "Переверзев Виталий (Торговый New)", "acts": 11, "fraud": 0, "fraud_pct": 0.0}, {"r": "Батурин Павел Юрьевич", "t": "Батурин Павел Юрьевич (СМ)", "acts": 11, "fraud": 0, "fraud_pct": 0.0}, {"r": "Юсуфов Абдурахмон Файзалиевич", "t": "Андреев Михаил (Торговый New)", "acts": 11, "fraud": 0, "fraud_pct": 0.0}, {"r": "Аверин Алексей Владимирович", "t": "Аверин Алексей Владимирович (СМ)", "acts": 10, "fraud": 10, "fraud_pct": 100.0}, {"r": "ВОЛКОВ СЕРГЕЙ АЛЕКСАНДРОВИЧ", "t": "Юрлов Александр", "acts": 10, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мирзаметов Абубукар Мирзаметович", "t": "Боев Дмитрий  (Торговый New)", "acts": 10, "fraud": 0, "fraud_pct": 0.0}, {"r": "ГРАЧЕВА АНАСТАСИЯ ВЛАДИМИРОВНА", "t": "Переверзев Виталий (Торговый New)", "acts": 9, "fraud": 0, "fraud_pct": 0.0}, {"r": "Толебаева Жанара Толебаевна", "t": "Юрлов Александр", "acts": 9, "fraud": 0, "fraud_pct": 0.0}, {"r": "Ахмадов Малик Адланович", "t": "Боев Дмитрий  (Торговый New)", "acts": 8, "fraud": 0, "fraud_pct": 0.0}, {"r": "КАМОЛОВ САНЖАР ХАМИДОВИЧ", "t": "Шкуренков Алексей Александрович (СМ)", "acts": 8, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мамедов Фарид Фидаил оглы", "t": "Правоторов Владимир Михайлович (СМ)", "acts": 8, "fraud": 0, "fraud_pct": 0.0}, {"r": "Манукян Давид Вачаганович", "t": "Ефимов Алексей Андреевич (СМ)", "acts": 8, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мовсисян Арнак Карапетович", "t": "Переверзев Виталий (Торговый New)", "acts": 8, "fraud": 0, "fraud_pct": 0.0}, {"r": "Морозевич Денис Григорьевич", "t": "Федосеева Мария Павловна (СМ)", "acts": 8, "fraud": 0, "fraud_pct": 0.0}, {"r": "Рублев Данила Олегович", "t": "Переверзев Виталий (Торговый New)", "acts": 8, "fraud": 0, "fraud_pct": 0.0}, {"r": "Суяров Баходур Бурихонович", "t": "Правоторов Владимир Михайлович (СМ)", "acts": 8, "fraud": 0, "fraud_pct": 0.0}, {"r": "ЭЛЬКАНОВ ФАИМ АСАДУЛЛАЕВИЧ", "t": "Федосеева Мария Павловна (СМ)", "acts": 8, "fraud": 0, "fraud_pct": 0.0}, {"r": "БОРИСОВ СЕРГЕЙ СЕРГЕЕВИЧ", "t": "Арен Дуринян (Торговый New)", "acts": 7, "fraud": 0, "fraud_pct": 0.0}, {"r": "Казбеков Магомед-Салах Магомедович", "t": "Переверзев Виталий (Торговый New)", "acts": 7, "fraud": 0, "fraud_pct": 0.0}, {"r": "Хорева Елена Владимировна", "t": "Правоторов Владимир Михайлович (СМ)", "acts": 7, "fraud": 0, "fraud_pct": 0.0}, {"r": "Крюков Алексей Юрьевич", "t": "Переверзев Виталий (Торговый New)", "acts": 6, "fraud": 0, "fraud_pct": 0.0}, {"r": "МАКЯН СЕРГЕЙ", "t": "Переверзев Виталий (Торговый New)", "acts": 6, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мирошниченко Артем Геннадьевич", "t": "Переверзев Виталий (Торговый New)", "acts": 6, "fraud": 0, "fraud_pct": 0.0}, {"r": "Найминова Лина Батровна", "t": "Бакытов Бекжан (Торговый New)", "acts": 6, "fraud": 0, "fraud_pct": 0.0}, {"r": "ПОЛЯКОВА ЮЛИЯ АНАТОЛЬЕВНА", "t": "Андреев Михаил (Торговый New)", "acts": 6, "fraud": 0, "fraud_pct": 0.0}, {"r": "УВАРОВ КОНСТАНТИН КОНСТАНТИНОВИЧ", "t": "Боев Дмитрий  (Торговый New)", "acts": 6, "fraud": 0, "fraud_pct": 0.0}, {"r": "Умаев Магомед Исаевич", "t": "Боев Дмитрий  (Торговый New)", "acts": 6, "fraud": 0, "fraud_pct": 0.0}, {"r": "Худяков Юрий Александрович", "t": "Переверзев Виталий (Торговый New)", "acts": 6, "fraud": 0, "fraud_pct": 0.0}, {"r": "TOSHPULATOV TEMURBEK ABDUKAHHOR UGLI", "t": "Переверзев Виталий (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Адамов Гулимжон Абдувахобович", "t": "Бакытов Бекжан (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Альборов Амир Асланбиевич", "t": "Переверзев Виталий (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Ахмаджонов Иброхимжон Илхомжонович", "t": "Андреев Михаил (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Ахмаджонов Равшанжон Илхомжон угли", "t": "Переверзев Виталий (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Байрамова Надежда Юрьевна", "t": "Переверзев Виталий (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Бакиева Кховважон Шикхнозар Кизи", "t": "Переверзев Виталий (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Долженков Валентин Александрович", "t": "Переверзев Виталий (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Исаков Яниддин Играмудинович", "t": "Юрлов Александр", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Кусина Ольга Евгеньевна", "t": "Правоторов Владимир Михайлович (СМ)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мусаев Урцум Гаджимурадович", "t": "Переверзев Виталий (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Пулатов Назирхуджа Олимхонович", "t": "Андреев Михаил (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Рагимов Шамкир Ширали оглы", "t": "Переверзев Виталий (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "ШИШХАЕВ АБУБАКАР-СИДИК МАГОМЕДОВИЧ", "t": "Переверзев Виталий (Торговый New)", "acts": 5, "fraud": 0, "fraud_pct": 0.0}, {"r": "Абу Зияд Надер Абдаллах", "t": "Фролов Станислав (Проект Коробочка)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Маммадов Алик Техран Оглу", "t": "Переверзев Виталий (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Мусаев Магомед Назирович", "t": "Андреев Михаил (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Павликова Виктория Алимжановна", "t": "Фролов Станислав (Проект Коробочка)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Пайзутддинов Хусниддин Шамшиддинович", "t": "Боев Дмитрий  (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "РАМАЗАНОВ РАМАЗАН АХМЕДОВИЧ", "t": "Бакытов Бекжан (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "ХРИСАНОВ Вячеслав Владимирович", "t": "Переверзев Виталий (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "ЮСУПОВ ОРТИК САМАНДАРОВИЧ", "t": "Переверзев Виталий (Торговый New)", "acts": 4, "fraud": 0, "fraud_pct": 0.0}, {"r": "Abdusalomov Ravshanjon Abdujalil Ugli", "t": "Переверзев Виталий (Торговый New)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "АСРЯН ВАГАН ВАЛЕРИКОВИЧ", "t": "Тупиков Станислав (ФЖ)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}, {"r": "Адуев Магомед Асланбекович", "t": "Леонов Михаил (Проект Коробочка)", "acts": 3, "fraud": 0, "fraud_pct": 0.0}], "ops": {"Билайн": 724, "Мегафон": 297, "Yota": 206, "МТС": 112, "Tele2": 27}}}, "privl": [{"n": "Переверзев Виталий (Торговый New)", "v": 34, "u": 20, "s": 14}, {"n": "Зоя Кувшинова", "v": 22, "u": 1, "s": 21}, {"n": "Андреев Михаил Анатольевич", "v": 21, "u": 19, "s": 2}, {"n": "Мокров Евгений Геннадьевич", "v": 15, "u": 10, "s": 5}, {"n": "Бакытов Бекжан Бакытович АС", "v": 13, "u": 9, "s": 4}, {"n": "Гришин Александр Сергеевич", "v": 13, "u": 4, "s": 9}, {"n": "Ефимов Алекс Андреевич", "v": 12, "u": 3, "s": 9}, {"n": "Партнёры ТП Мск Доставка Logsis", "v": 12, "u": 0, "s": 12}, {"n": "ФЕДОСЕЕВА МАРИЯ ПАВЛОВНА", "v": 11, "u": 2, "s": 9}, {"n": "Агентский Связист", "v": 10, "u": 0, "s": 10}, {"n": "Жук Сергей", "v": 10, "u": 0, "s": 10}, {"n": "Заяц Арцём", "v": 8, "u": 1, "s": 7}, {"n": "Доброхота Владислав Игоревич", "v": 7, "u": 1, "s": 6}, {"n": "Леонов Михаил (Проект коробочка)", "v": 7, "u": 4, "s": 3}, {"n": "Бакытов Бекжан Бакытович СМ", "v": 5, "u": 3, "s": 2}, {"n": "Кузьмина Светлана Геннадьевна", "v": 5, "u": 5, "s": 0}, {"n": "Боев Дмитрий Евгеньевич", "v": 4, "u": 3, "s": 1}, {"n": "Шкуренков Алексей Александрович", "v": 4, "u": 0, "s": 4}, {"n": "Алексей Аверин", "v": 3, "u": 2, "s": 1}, {"n": "Арен Дуринян", "v": 3, "u": 3, "s": 0}, {"n": "Юрлов Александр (Торговый)", "v": 3, "u": 0, "s": 3}, {"n": "Тупиков Станис", "v": 2, "u": 2, "s": 0}, {"n": "Афанаскин Николай (Торговый NEW)", "v": 1, "u": 0, "s": 1}, {"n": "Ефимов Алексей Андреевич", "v": 1, "u": 1, "s": 0}, {"n": "Офис", "v": 1, "u": 1, "s": 0}, {"n": "Павел Батурин", "v": 1, "u": 1, "s": 0}, {"n": "Правоторов Владимир Михайлович", "v": 1, "u": 1, "s": 0}, {"n": "Фролов Станислав (Торговый NEW)", "v": 1, "u": 1, "s": 0}], "privl_total": {"v": 230, "u": 97, "s": 133}, "privl_map": {"Переверзев Виталий (Торговый New)": {"n": "Переверзев Виталий (Торговый New)", "v": 34, "u": 20, "s": 14}, "Зоя Кувшинова": {"n": "Зоя Кувшинова", "v": 22, "u": 1, "s": 21}, "Андреев Михаил Анатольевич": {"n": "Андреев Михаил Анатольевич", "v": 21, "u": 19, "s": 2}, "Мокров Евгений Геннадьевич": {"n": "Мокров Евгений Геннадьевич", "v": 15, "u": 10, "s": 5}, "Бакытов Бекжан Бакытович АС": {"n": "Бакытов Бекжан Бакытович АС", "v": 13, "u": 9, "s": 4}, "Гришин Александр Сергеевич": {"n": "Гришин Александр Сергеевич", "v": 13, "u": 4, "s": 9}, "Ефимов Алекс Андреевич": {"n": "Ефимов Алекс Андреевич", "v": 12, "u": 3, "s": 9}, "Партнёры ТП Мск Доставка Logsis": {"n": "Партнёры ТП Мск Доставка Logsis", "v": 12, "u": 0, "s": 12}, "ФЕДОСЕЕВА МАРИЯ ПАВЛОВНА": {"n": "ФЕДОСЕЕВА МАРИЯ ПАВЛОВНА", "v": 11, "u": 2, "s": 9}, "Агентский Связист": {"n": "Агентский Связист", "v": 10, "u": 0, "s": 10}, "Жук Сергей": {"n": "Жук Сергей", "v": 10, "u": 0, "s": 10}, "Заяц Арцём": {"n": "Заяц Арцём", "v": 8, "u": 1, "s": 7}, "Доброхота Владислав Игоревич": {"n": "Доброхота Владислав Игоревич", "v": 7, "u": 1, "s": 6}, "Леонов Михаил (Проект коробочка)": {"n": "Леонов Михаил (Проект коробочка)", "v": 7, "u": 4, "s": 3}, "Бакытов Бекжан Бакытович СМ": {"n": "Бакытов Бекжан Бакытович СМ", "v": 5, "u": 3, "s": 2}, "Кузьмина Светлана Геннадьевна": {"n": "Кузьмина Светлана Геннадьевна", "v": 5, "u": 5, "s": 0}, "Боев Дмитрий Евгеньевич": {"n": "Боев Дмитрий Евгеньевич", "v": 4, "u": 3, "s": 1}, "Шкуренков Алексей Александрович": {"n": "Шкуренков Алексей Александрович", "v": 4, "u": 0, "s": 4}, "Алексей Аверин": {"n": "Алексей Аверин", "v": 3, "u": 2, "s": 1}, "Арен Дуринян": {"n": "Арен Дуринян", "v": 3, "u": 3, "s": 0}, "Юрлов Александр (Торговый)": {"n": "Юрлов Александр (Торговый)", "v": 3, "u": 0, "s": 3}, "Тупиков Станис": {"n": "Тупиков Станис", "v": 2, "u": 2, "s": 0}, "Афанаскин Николай (Торговый NEW)": {"n": "Афанаскин Николай (Торговый NEW)", "v": 1, "u": 0, "s": 1}, "Ефимов Алексей Андреевич": {"n": "Ефимов Алексей Андреевич", "v": 1, "u": 1, "s": 0}, "Офис": {"n": "Офис", "v": 1, "u": 1, "s": 0}, "Павел Батурин": {"n": "Павел Батурин", "v": 1, "u": 1, "s": 0}, "Правоторов Владимир Михайлович": {"n": "Правоторов Владимир Михайлович", "v": 1, "u": 1, "s": 0}, "Фролов Станислав (Торговый NEW)": {"n": "Фролов Станислав (Торговый NEW)", "v": 1, "u": 1, "s": 0}}};
+
+const PHRASES = {
+  S: ["🏆 Машина продаж!", "🚀 Ракета месяца!", "💎 Топ-игрок команды!", "⚡ Электростанция продаж!"],
+  A: ["🔥 В ударе!", "💪 Крепкий результат!", "📈 Стабильно растёт!", "✅ Выполняет и перевыполняет!"],
+  B: ["👍 Хороший темп", "📊 Есть потенциал роста", "🎯 Ровный игрок", "💼 Работает стабильно"],
+  C: ["⚠️ Нужно прибавить", "🔧 Есть над чем работать", "📉 Требует внимания", "💬 Поговори с руководителем"]
+};
+
+const OP_COLORS = {
+  'Билайн':   {bg:'#FFD700', text:'#1a1a1a', border:'#E6C200'},
+  'Мегафон':  {bg:'#830051', text:'#ffffff', border:'#5c0038'},
+  'МТС':      {bg:'#E30611', text:'#ffffff', border:'#b80510'},
+  'Yota':     {bg:'#00D4CC', text:'#000000', border:'#00aaa3'},
+  'Tele2':    {bg:'#FF0090', text:'#ffffff', border:'#cc0073'},
+};
+const OP_CHART_COLORS = ['#FFD700','#830051','#E30611','#00D4CC','#FF0090'];
+
+// ── SERVER MODE ──────────────────────────────────────────────
+// Когда BOT_URL задан — данные хранятся на сервере
+// Когда нет — fallback на localStorage + встроенный SEED
+
+function initStorage(){
+  // Всегда стартуем с SEED (он уже в коде)
+  // Потом перезапишем данными с сервера если BOT_URL задан
+  const s = localStorage.getItem('as_dash_v4');
+  if(!s){localStorage.setItem('as_dash_v4',JSON.stringify(SEED));return JSON.parse(JSON.stringify(SEED));}
+  const ex = JSON.parse(s);
+  Object.keys(SEED.months).forEach(m=>{if(!ex.months[m])ex.months[m]=SEED.months[m];});
+  if(!ex.privl)ex.privl=SEED.privl;
+  if(!ex.privl_total)ex.privl_total=SEED.privl_total;
+  localStorage.setItem('as_dash_v4',JSON.stringify(ex));
+  return ex;
+}
+
+async function fetchServerData() {
+  if (!BOT_URL) return;
+  try {
+    const r = await fetch(BOT_URL + '/data');
+    if (!r.ok) return;
+    const serverDB = await r.json();
+    if (!serverDB.months || !Object.keys(serverDB.months).length) return;
+    // Мержим: серверные данные приоритетнее
+    Object.assign(DB.months, serverDB.months);
+    if (serverDB.privl && serverDB.privl.length) {
+      DB.privl = serverDB.privl;
+      DB.privl_total = serverDB.privl_total;
+    }
+    localStorage.setItem('as_dash_v4', JSON.stringify(DB));
+    renderMonthBtns();
+    render();
+    console.log('Server data loaded:', Object.keys(serverDB.months));
+  } catch(e) {
+    console.warn('Server unavailable, using local data:', e.message);
+  }
+}
+
+// ── TELEGRAM BOT CONFIG ─────────────────────────────────────
+// После деплоя бота вставь сюда URL
+let BOT_URL = localStorage.getItem('as_bot_url') || '';
+
+function setBotUrl(url) {
+  BOT_URL = url.trim();
+  localStorage.setItem('as_bot_url', BOT_URL);
+  toast('✅ URL бота сохранён!');
+}
+
+// Clear old broken storage keys
+
+['as_dash_v3','partner_dash_v2'].forEach(k=>localStorage.removeItem(k));
+let DB = initStorage();
+let cur = Object.keys(DB.months).sort().reverse()[0];
+let opsC=null, mainC=null, privlC=null;
+let prAllCache=[];
+let currentPRFilter='all';
+
+function toast(msg){
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.classList.add('show');
+  setTimeout(()=>el.classList.remove('show'),3000);
+}
+
+// ─── FILE UPLOAD ───────────────────────────────────────────────
+async function loadFile(input,type){
+  const file=input.files[0]; if(!file)return;
+  const ab=await file.arrayBuffer();
+  const wb=XLSX.read(ab);
+  const ws=wb.Sheets[wb.SheetNames[0]];
+  const rows=XLSX.utils.sheet_to_json(ws,{header:1});
+  if(type==='act') processActivations(rows[0], rows.slice(1));
+  else processPrivl(rows[0], rows.slice(1));
+  input.value='';
+}
+
+function colIdx(h,n){
+  // Exact match first
+  let i = h.findIndex(x=>x&&String(x).trim()===n);
+  if(i>=0) return i;
+  // Fuzzy: lowercase + trim
+  const nl=n.toLowerCase().trim();
+  return h.findIndex(x=>x&&String(x).trim().toLowerCase()===nl);
+}
+
+function excelToMonth(v){
+  if(!v)return null;
+  if(typeof v==='string'){const m=v.match(/^(\d{2})\.(\d{2})\.(\d{4})/);if(m)return`${m[3]}-${m[2]}`;return null;}
+  if(typeof v==='number'){const d=new Date(Math.round((v-25569)*86400*1000));return`${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}`;}
+  return null;
+}
+
+function processActivations(headers, rows){
+  const iR=colIdx(headers,'Ритейл'), iT=colIdx(headers,'Торговый'),
+        iO=colIdx(headers,'Оператор'), iD=colIdx(headers,'Дата активации'),
+        iPR=colIdx(headers,'Причина отключения');
+  if(iR<0||iT<0||iD<0){toast('❌ Не найдены нужные столбцы');return;}
+  const byM={};
+  rows.forEach(r=>{
+    const m=excelToMonth(r[iD]); if(!m)return;
+    if(!byM[m])byM[m]=[];
+    byM[m].push({r:String(r[iR]||'').trim(), t:String(r[iT]||'').trim(),
+                  op:String(r[iO]||'').trim(),
+                  fraud: iPR>=0 && String(r[iPR]||'').trim()==='Фрод'});
+  });
+  const stored=JSON.parse(localStorage.getItem('as_dash_v4'));
+  let added=0;
+  const today=new Date();
+  const curM=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`;
+  Object.entries(byM).forEach(([m,acts])=>{
+    if(stored.months[m]&&m!==curM)return;
+    const tpMap={}, prMap={}, ops={};
+    acts.forEach(a=>{
+      if(!a.r||!a.t)return;
+      if(!tpMap[a.t])tpMap[a.t]={name:a.t,acts:0,fraud:0,parts:new Set()};
+      tpMap[a.t].acts++; if(a.fraud)tpMap[a.t].fraud++;
+      tpMap[a.t].parts.add(a.r);
+      const k=a.r+'|||'+a.t;
+      if(!prMap[k])prMap[k]={r:a.r,t:a.t,acts:0,fraud:0};
+      prMap[k].acts++; if(a.fraud)prMap[k].fraud++;
+      if(a.op)ops[a.op]=(ops[a.op]||0)+1;
+    });
+    const tpList=Object.values(tpMap).map(tp=>{
+      const pa={};acts.filter(a=>a.t===tp.name).forEach(a=>{pa[a.r]=(pa[a.r]||0)+1;});
+      const vals=Object.values(pa);
+      const fp=tp.acts?+(tp.fraud/tp.acts*100).toFixed(1):0;
+      return{name:tp.name,acts:tp.acts,partners:tp.parts.size,
+             p3:vals.filter(v=>v>=3).length,p10:vals.filter(v=>v>=10).length,
+             fraud:tp.fraud,fraud_pct:fp};
+    }).sort((a,b)=>b.acts-a.acts);
+    const prList=Object.values(prMap).map(p=>({...p,fraud_pct:p.acts?+(p.fraud/p.acts*100).toFixed(1):0}))
+                  .sort((a,b)=>b.acts-a.acts).slice(0,80);
+    const actsByR={};acts.forEach(a=>{actsByR[a.r]=(actsByR[a.r]||0)+1;});
+    const vals=Object.values(actsByR);
+    const ft=acts.filter(a=>a.fraud).length;
+    stored.months[m]={total:acts.length,ap:Object.keys(actsByR).length,
+      p3:vals.filter(v=>v>=3).length,p10:vals.filter(v=>v>=10).length,
+      avg:+(acts.length/Object.keys(actsByR).length).toFixed(1),
+      fraud:ft,fraud_pct:+(ft/acts.length*100).toFixed(1),
+      tp:tpList,partners:prList,ops};
+    added++;
+  });
+  localStorage.setItem('as_dash_v4',JSON.stringify(stored));
+  DB=stored;
+  toast(`✅ Добавлено/обновлено: ${added} мес.`);
+  localStorage.setItem('as_dash_v4', JSON.stringify(stored));
+  DB = stored;
+  renderMonthBtns(); render();
+  // Пушим на сервер и триггерим TG
+  if (BOT_URL && added > 0) {
+    setTimeout(() => pushToServerAndNotify(byM, cur_m), 800);
+  }
+}
+
+function processPrivl(headers,rows){
+  const iN=colIdx(headers,'Имя сотрудника создавшего'),iT=colIdx(headers,'Как создан');
+  if(iN<0||iT<0){
+    toast(`❌ Не найдены столбцы (iN=${iN}, iT=${iT}). Заголовки: ${headers.slice(0,5).join(', ')}`);
+    return;
+  }
+  const map={};
+  let validRows=0;
+  rows.forEach(r=>{
+    const n=String(r[iN]||'').trim();
+    const t=String(r[iT]||'').trim();
+    if(!n || n==='undefined' || n==='null') return; // skip empty rows
+    validRows++;
+    if(!map[n])map[n]={n,v:0,u:0,s:0};
+    map[n].v++;
+    if(t==='Уникальный')map[n].u++;
+    if(t==='Субдилер')map[n].s++;
+  });
+  const privl=Object.values(map).sort((a,b)=>b.v-a.v);
+  // FIX: compute totals from actual data, NOT from rows.length
+  const tot={
+    v: privl.reduce((s,x)=>s+x.v, 0),
+    u: privl.reduce((s,x)=>s+x.u, 0),
+    s: privl.reduce((s,x)=>s+x.s, 0)
+  };
+  const stored=JSON.parse(localStorage.getItem('as_dash_v4'));
+  stored.privl=privl; stored.privl_total=tot;
+  localStorage.setItem('as_dash_v4',JSON.stringify(stored));
+  DB=stored;
+  toast(`✅ Привлечение: ${privl.length} торговых, ${tot.v} записей (${tot.u} уник. / ${tot.s} суб.)`);
+  if (BOT_URL) pushPrivlToServer(privl, tot);
+  if(document.getElementById('tat').style.display!=='none') renderPrivl();
+}
+
+// ─── HELPERS ───────────────────────────────────────────────────
+function sortedMonths(){return Object.keys(DB.months).sort();}
+function prevM(m){const a=sortedMonths();const i=a.indexOf(m);return i>0?a[i-1]:null;}
+function fmtM(m){const[y,mo]=m.split('-');const n=['','Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'];return n[+mo]+' '+y;}
+
+function renderMonthBtns(){
+  document.getElementById('month-btns').innerHTML=
+    sortedMonths().reverse().map(m=>
+      `<button class="mbtn${m===cur?' on':''}" onclick="selectMonth('${m}')">${fmtM(m)}</button>`
+    ).join('');
+}
+
+function selectMonth(m){cur=m;renderMonthBtns();render();}
+
+function render(){
+  const d=DB.months[cur], pv=prevM(cur), dp=pv?DB.months[pv]:null;
+  renderKPI(d,dp,pv);
+  renderTopTP(d.tp.slice(0,6));
+  renderFraudTP(d.tp);
+  renderOps(d.ops);
+  renderMainChart();
+  renderTPTab(d,dp,pv);
+  prAllCache=buildPRAll(d.partners, dp?dp.partners:[]);
+  renderPRSegs();
+  renderPRTable(prAllCache,'all');
+  currentPRFilter='all';
+  document.querySelectorAll('.sc').forEach((e,i)=>{e.classList.toggle('on',i===0);});
+  document.getElementById('pr-month-lbl').textContent=fmtM(cur)+(pv?` · vs ${fmtM(pv)}`:'');
+}
+
+function renderKPI(d,dp,pv){
+  const pct=dp?Math.round((d.total-dp.total)/dp.total*100):null;
+  const tCls=pct===null?'':pct>=0?'up':'dn';
+  const tStr=pct===null?'&nbsp;':`${pct>=0?'↑':'↓'}${Math.abs(pct)}% vs ${fmtM(pv)}`;
+  const fraudPct=d.fraud_pct||0;
+  const fraudCls=fraudPct>20?'red':fraudPct>10?'amber':'';
+  document.getElementById('kpi-sv').innerHTML=`
+    <div class="kc"><div class="kl">Активаций</div><div class="kv">${d.total.toLocaleString('ru')}</div><div class="ks ${tCls}">${tStr}</div></div>
+    <div class="kc"><div class="kl">Активных партнёров</div><div class="kv">${d.ap}</div><div class="ks">${dp?`vs ${dp.ap} пред.`:'&nbsp;'}</div></div>
+    <div class="kc"><div class="kl">Партнёров 3+</div><div class="kv">${d.p3}</div><div class="ks">${Math.round(d.p3/d.ap*100)}% от активных</div></div>
+    <div class="kc"><div class="kl">Партнёров 10+</div><div class="kv">${d.p10}</div><div class="ks">${Math.round(d.p10/d.ap*100)}% от активных</div></div>
+    <div class="kc fraud-card"><div class="kl">🚨 Фрод активаций</div><div class="kv ${fraudCls}">${d.fraud||0}</div><div class="ks dn">${fraudPct}% от всех</div></div>
+    <div class="kc"><div class="kl">Ср. акт. / партнёр</div><div class="kv">${d.avg}</div><div class="ks">${dp?`vs ${dp.avg} пред.`:'&nbsp;'}</div></div>
+  `;
+}
+
+function bars(elId, items, maxVal, cls, delay=0){
+  const el=document.getElementById(elId); if(!el)return;
+  el.innerHTML=items.map((it,i)=>{
+    const rn=i===0?'g1':i===1?'s1':i===2?'b1':'';
+    return `<div class="brow" style="animation-delay:${delay+i*0.05}s">
+      <span class="rn ${rn}">${i+1}</span>
+      <span class="bn" title="${it.nm}">${it.nm}</span>
+      <div class="btr"><div class="bf ${cls}" data-w="${Math.max(Math.round(it.val/maxVal*100),5)}">${it.val}</div></div>
+    </div>`;
+  }).join('');
+  requestAnimationFrame(()=>{
+    el.querySelectorAll('.bf').forEach(b=>b.style.width=b.dataset.w+'%');
+  });
+}
+
+function renderTopTP(tp){
+  bars('top-tp-sv', tp.map(d=>({nm:d.name,val:d.acts})), tp[0]?.acts||1, 'bg');
+}
+
+function renderFraudTP(tp){
+  const hasFraud=tp.filter(t=>t.fraud>0).sort((a,b)=>b.fraud-a.fraud).slice(0,6);
+  const max=hasFraud[0]?.fraud||1;
+  const el=document.getElementById('fraud-tp-sv'); if(!el)return;
+  if(!hasFraud.length){el.innerHTML='<div style="color:var(--text3);font-size:12px;padding:8px">Нет фрод-активаций в этом периоде 🎉</div>';return;}
+  el.innerHTML=hasFraud.map((t,i)=>{
+    const pct=Math.max(Math.round(t.fraud/max*100),5);
+    const rn=i===0?'g1':i===1?'s1':i===2?'b1':'';
+    return `<div class="brow" style="animation-delay:${i*0.06}s">
+      <span class="rn ${rn}">${i+1}</span>
+      <span class="bn" title="${t.name}">${t.name}</span>
+      <div class="btr"><div class="bf bfr" data-w="${pct}">${t.fraud} (${t.fraud_pct}%)</div></div>
+    </div>`;
+  }).join('');
+  requestAnimationFrame(()=>{
+    el.querySelectorAll('.bf').forEach(b=>b.style.width=b.dataset.w+'%');
+  });
+}
+
+function renderOps(ops){
+  if(opsC)opsC.destroy();
+  const labels=Object.keys(ops), vals=Object.values(ops);
+  const colors=labels.map(l=>OP_CHART_COLORS[['Билайн','Мегафон','МТС','Yota','Tele2'].indexOf(l)]||'#888');
+  opsC=new Chart(document.getElementById('opsChart'),{
+    type:'doughnut',
+    data:{labels, datasets:[{data:vals, backgroundColor:colors, borderWidth:2, borderColor:'#1c251c'}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{position:'right',labels:{color:'#7fa88f',font:{size:11},boxWidth:12,padding:7,
+        generateLabels(chart){
+          return chart.data.labels.map((l,i)=>({
+            text:` ${l}: ${chart.data.datasets[0].data[i]}`,
+            fillStyle:colors[i], strokeStyle:colors[i], lineWidth:0,
+            fontColor:'#7fa88f', hidden:false, index:i
+          }));
+        }
+      }}},
+      tooltip:{backgroundColor:'#1c251c',borderColor:'rgba(74,210,134,.3)',borderWidth:1,
+               titleColor:'#4ad286',bodyColor:'#7fa88f'}
+    }
+  });
+}
+
+function renderMainChart(){
+  if(mainC)mainC.destroy();
+  const months=sortedMonths();
+  const vals=months.map(m=>DB.months[m].total);
+  const fraudVals=months.map(m=>DB.months[m].fraud||0);
+  const barColors=months.map(m=>m===cur?'#4ad286':'rgba(74,210,134,0.22)');
+  mainC=new Chart(document.getElementById('mainChart'),{
+    type:'bar',
+    data:{labels:months.map(fmtM), datasets:[
+      {label:'Активации',data:vals,backgroundColor:barColors,borderRadius:5,order:2},
+      {label:'Фрод',data:fraudVals,type:'line',borderColor:'#e84040',backgroundColor:'rgba(232,64,64,0.1)',
+       tension:0.4,pointBackgroundColor:'#e84040',pointRadius:3,borderWidth:2,fill:true,order:1}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{labels:{color:'#7fa88f',font:{size:11},boxWidth:10}},
+        tooltip:{backgroundColor:'#1c251c',borderColor:'rgba(74,210,134,.3)',borderWidth:1,titleColor:'#4ad286',bodyColor:'#7fa88f'}},
+      scales:{y:{ticks:{color:'#4a6454',font:{size:10}},grid:{color:'rgba(255,255,255,0.04)'}},
+              x:{ticks:{color:'#4a6454',font:{size:10}},grid:{display:false}}},
+      animation:{duration:600}
+    }
+  });
+}
+
+function renderTPTab(d,dp,pv){
+  document.getElementById('tp-month-lbl').textContent=`${fmtM(cur)}${pv?` · vs ${fmtM(pv)}`:''}`;
+  const prevMap={};if(dp)dp.tp.forEach(t=>prevMap[t.name]=t.acts);
+  document.getElementById('tp-tbl').innerHTML=d.tp.map((t,i)=>{
+    const pa=prevMap[t.name];
+    const diff=pa!==undefined?t.acts-pa:null;
+    const tr=diff===null?'—':diff>0?`<span class="up">↑${diff}</span>`:diff<0?`<span class="dn">↓${Math.abs(diff)}</span>`:'=';
+    const rn=i===0?'g1':i===1?'s1':i===2?'b1':'';
+    const fraudCls=t.fraud_pct>30?'dn':t.fraud_pct>15?'amber':'';
+    return `<tr class="tr-anim ${t.fraud>0?'fraud-row':''}" style="animation-delay:${i*0.04}s">
+      <td><span class="rn ${rn}">${i+1}</span></td>
+      <td style="color:var(--text);font-weight:500">${t.name}</td>
+      <td><b style="color:var(--mint)">${t.acts}</b></td>
+      <td style="color:var(--text3)">${pa!==undefined?pa:'—'}</td>
+      <td>${t.partners}</td>
+      <td><span class="bdg bg2">${t.p3}</span></td>
+      <td><span class="bdg ${t.p10>0?'ba2':'bb2'}">${t.p10}</span></td>
+      <td class="fraud-val">${t.fraud||0}</td>
+      <td><span class="bdg ${t.fraud_pct>20?'br2':t.fraud_pct>10?'ba2':'bg2'}">${t.fraud_pct}%</span></td>
+      <td>${tr}</td>
+    </tr>`;
+  }).join('');
+  bars('tp-bar-top', d.tp.slice(0,10).map(t=>({nm:t.name,val:t.acts})), d.tp[0]?.acts||1,'bg',0.1);
+  bars('tp-bar-part', d.tp.slice(0,10).map(t=>({nm:t.name,val:t.partners})), d.tp[0]?.partners||1,'bb',0.1);
+  const hasFraud=d.tp.filter(t=>t.fraud>0).sort((a,b)=>b.fraud-a.fraud);
+  if(hasFraud.length) bars('tp-bar-fraud', hasFraud.slice(0,8).map(t=>({nm:t.name,val:t.fraud})), hasFraud[0].fraud,'bfr',0.1);
+  const hasFraudPct=d.tp.filter(t=>t.acts>=5&&t.fraud_pct>0).sort((a,b)=>b.fraud_pct-a.fraud_pct);
+  if(hasFraudPct.length) bars('tp-bar-fraud-pct', hasFraudPct.slice(0,8).map(t=>({nm:t.name,val:t.fraud_pct})), hasFraudPct[0].fraud_pct,'ba',0.1);
+}
+
+function buildPRAll(partners, prevPartners){
+  const pm={};prevPartners.forEach(p=>pm[p.r]=p.acts);
+  return partners.map(p=>({...p, prev:pm[p.r]||0, seg:p.acts>=10?'p10':p.acts>=3?'p3':'p1'}));
+}
+
+function renderPRSegs(){
+  const all=prAllCache;
+  document.getElementById('s-all').textContent=all.length;
+  document.getElementById('s-p3').textContent=all.filter(p=>p.acts>=3).length;
+  document.getElementById('s-p10').textContent=all.filter(p=>p.acts>=10).length;
+}
+
+function seg(el,filter){
+  currentPRFilter=filter;
+  document.querySelectorAll('.sc').forEach(e=>e.classList.remove('on'));
+  el.classList.add('on');
+  renderPRTable(prAllCache,filter);
+}
+
+function renderPRTable(all,filter){
+  let data=all;
+  if(filter==='p3') data=all.filter(p=>p.acts>=3);
+  if(filter==='p10') data=all.filter(p=>p.acts>=10);
+  if(filter==='fraud') data=all.filter(p=>p.fraud>0).sort((a,b)=>b.fraud-a.fraud);
+  if(filter==='grow') data=all.filter(p=>p.acts>p.prev&&p.prev>0);
+  if(filter==='drop') data=all.filter(p=>p.acts<p.prev&&p.prev>0);
+  document.getElementById('pr-tbl').innerHTML=data.map((p,i)=>{
+    const tr=p.acts>p.prev?`<span class="up">↑${p.acts-p.prev}</span>`:p.acts<p.prev?`<span class="dn">↓${p.prev-p.acts}</span>`:'—';
+    const seg=p.acts>=10?'<span class="bdg ba2">10+</span>':p.acts>=3?'<span class="bdg bg2">3+</span>':'<span class="bdg bb2">1+</span>';
+    const fraudCls=p.fraud>0?'fraud-val':'';
+    return `<tr class="tr-anim ${p.fraud>0?'fraud-row':''}" style="animation-delay:${Math.min(i,20)*0.025}s">
+      <td style="color:var(--text3)">${i+1}</td>
+      <td style="color:var(--text);max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${p.r}">${p.r}</td>
+      <td style="color:var(--text3);font-size:11px;max-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${p.t}">${p.t}</td>
+      <td><b style="color:var(--mint)">${p.acts}</b></td>
+      <td style="color:var(--text3)">${p.prev||'—'}</td>
+      <td class="${fraudCls}">${p.fraud||0}</td>
+      <td>${p.fraud>0?`<span class="bdg ${p.fraud_pct>30?'br2':p.fraud_pct>10?'ba2':'bg2'}">${p.fraud_pct}%</span>`:'—'}</td>
+      <td>${tr}</td>
+      <td>${seg}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderPrivl(){
+  const pt=DB.privl_total;
+  const pct=pt?Math.round(pt.u/pt.v*100):0;
+  document.getElementById('kpi-at').innerHTML=`
+    <div class="kc"><div class="kl">Привлечено всего</div><div class="kv">${pt?.v||0}</div><div class="ks">&nbsp;</div></div>
+    <div class="kc"><div class="kl">Уникальных</div><div class="kv">${pt?.u||0}</div><div class="ks up">${pct}% от всех</div></div>
+    <div class="kc"><div class="kl">Субдилеров</div><div class="kv">${pt?.s||0}</div><div class="ks">${100-pct}% от всех</div></div>
+  `;
+  if(privlC)privlC.destroy();
+  const privl=(DB.privl||[]).slice(0,15);
+  privlC=new Chart(document.getElementById('privlChart'),{
+    type:'bar',
+    data:{labels:privl.map(d=>d.n.split(' ').slice(0,2).join(' ')),
+      datasets:[
+        {label:'Уникальных',data:privl.map(d=>d.u),backgroundColor:'#4ad286',borderRadius:3},
+        {label:'Субдилеров',data:privl.map(d=>d.s),backgroundColor:'rgba(245,166,35,0.7)',borderRadius:3}
+      ]},
+    options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',
+      plugins:{legend:{labels:{color:'#7fa88f',font:{size:11},boxWidth:10}},
+        tooltip:{backgroundColor:'#1c251c',borderColor:'rgba(74,210,134,.3)',borderWidth:1,titleColor:'#4ad286',bodyColor:'#7fa88f'}},
+      scales:{x:{stacked:true,ticks:{color:'#4a6454',font:{size:10}},grid:{color:'rgba(255,255,255,0.04)'}},
+              y:{stacked:true,ticks:{color:'#7fa88f',font:{size:10}},grid:{display:false}}},
+      animation:{duration:700}
+    }
+  });
+  document.getElementById('privl-tbl').innerHTML=(DB.privl||[]).map((d,i)=>{
+    const pct=d.v?Math.round(d.u/d.v*100):0;
+    const cl=pct>=50?'bg2':pct>=25?'ba2':'br2';
+    return `<tr class="tr-anim" style="animation-delay:${Math.min(i,15)*0.03}s">
+      <td style="color:var(--text3)">${i+1}</td><td style="color:var(--text)">${d.n}</td>
+      <td><b style="color:var(--mint)">${d.v}</b></td>
+      <td style="color:var(--mint)">${d.u}</td>
+      <td style="color:var(--amber)">${d.s}</td>
+      <td><span class="bdg ${cl}">${pct}%</span></td>
+    </tr>`;
+  }).join('');
+}
+
+// ─── EFFICIENCY ────────────────────────────────────────────────
+function calcEfficiency(){
+  const d=DB.months[cur];
+  const privlMap={};
+  (DB.privl||[]).forEach(p=>privlMap[p.n]=p);
+
+  const maxActs=Math.max(...d.tp.map(t=>t.acts),1);
+  const maxP3=Math.max(...d.tp.map(t=>t.p3),1);
+  const maxPrivl=Math.max(...d.tp.map(t=>{
+    const pm=privlMap[t.name]; return pm?pm.u:0;
+  }),1);
+
+  return d.tp.map(t=>{
+    const pm=privlMap[t.name];
+    const actScore=(t.acts/maxActs)*40;
+    const p3Score=(t.p3/maxP3)*25;
+    const privlScore=pm?(pm.u/maxPrivl)*20:0;
+    const fraudPenalty=(t.fraud_pct||0)*0.3; // штраф
+    const score=Math.max(0, Math.round(actScore+p3Score+privlScore-fraudPenalty));
+    const grade=score>=75?'S':score>=50?'A':score>=30?'B':'C';
+    return {...t, pm, score, grade,
+      acts_n:t.acts, p3_n:t.p3,
+      uniq:pm?pm.u:0, sub:pm?pm.s:0
+    };
+  }).sort((a,b)=>b.score-a.score);
+}
+
+function renderEfficiency(){
+  const items=calcEfficiency();
+  const el=document.getElementById('eff-list'); if(!el)return;
+  el.innerHTML=items.map((t,i)=>{
+    const phrases=PHRASES[t.grade];
+    const phrase=phrases[i%phrases.length];
+    const gradeCls={S:'score-s',A:'score-a',B:'score-b',C:'score-c'}[t.grade];
+    const medalCls={S:'medal-s',A:'medal-a',B:'medal-b',C:'medal-c'}[t.grade];
+    const barColor={S:'var(--mint)',A:'#2980b9',B:'var(--amber)',C:'var(--red)'}[t.grade];
+    const fraudWarn=t.fraud_pct>20?` <span class="bdg br2">🚨 фрод ${t.fraud_pct}%</span>`:'';
+    return `<div class="eff-card ${gradeCls}" style="animation-delay:${i*0.05}s">
+      <div class="eff-rank ${medalCls}" style="color:${t.grade==='A'?'#fff':'#000'};font-size:14px">${t.grade}</div>
+      <div class="eff-info">
+        <div class="eff-name">${t.name}</div>
+        <div class="eff-phrase">${phrase}${fraudWarn}</div>
+        <div class="eff-stats">
+          <span class="eff-stat">⚡ ${t.acts} акт.</span>
+          <span class="eff-stat">👥 ${t.partners} партнёров</span>
+          <span class="eff-stat">3+ = ${t.p3}</span>
+          <span class="eff-stat">10+ = ${t.p10}</span>
+          ${t.uniq>0?`<span class="eff-stat">🆕 ${t.uniq} уник.</span>`:''}
+          ${t.fraud>0?`<span class="eff-stat" style="color:var(--red)">🚨 ${t.fraud} фрод</span>`:''}
+        </div>
+        <div class="eff-bar-wrap"><div class="eff-bar-fill" data-w="${t.score}" style="background:${barColor};width:0"></div></div>
+      </div>
+      <div class="eff-score" style="color:${barColor}">${t.score}</div>
+    </div>`;
+  }).join('');
+  requestAnimationFrame(()=>{
+    el.querySelectorAll('.eff-bar-fill').forEach(b=>{b.style.width=b.dataset.w+'%';});
+  });
+}
+
+function sw(id,el){
+  ['sv','tp','pr','at','ef'].forEach(t=>document.getElementById('t'+t).style.display=t===id?'':'none');
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
+  el.classList.add('on');
+  if(id==='at')renderPrivl();
+  if(id==='ef')renderEfficiency();
+}
+
+
+// ── TELEGRAM FUNCTIONS ────────────────────────────────────────
+
+function showBotSettings() {
+  const modal = document.getElementById('tg-modal');
+  document.getElementById('bot-url-input').value = BOT_URL;
+  document.getElementById('api-secret-input').value = localStorage.getItem('as_api_secret') || 'as_secret_2026';
+  modal.style.display = 'flex';
+}
+
+function calcEfficiencyData() {
+  const d = DB.months[cur];
+  const privlMap = {};
+  (DB.privl||[]).forEach(p => privlMap[p.n] = p);
+  const maxActs = Math.max(...d.tp.map(t=>t.acts), 1);
+  const maxP3   = Math.max(...d.tp.map(t=>t.p3), 1);
+  const maxPrivl = Math.max(...d.tp.map(t=>{const pm=privlMap[t.name];return pm?pm.u:0;}), 1);
+  return d.tp.map(t => {
+    const pm = privlMap[t.name];
+    const score = Math.max(0, Math.round(
+      (t.acts/maxActs)*40 + (t.p3/maxP3)*25 +
+      (pm?(pm.u/maxPrivl)*20:0) - (t.fraud_pct||0)*0.3
+    ));
+    const grade = score>=75?'S':score>=50?'A':score>=30?'B':'C';
+    return {...t, score, grade};
+  }).sort((a,b) => b.score - a.score);
+}
+
+async function sendTgReport() {
+  if (!BOT_URL) return; // бот не настроен — пропускаем
+  const d = DB.months[cur];
+  const pv = prevM(cur);
+  const dp = pv ? DB.months[pv] : null;
+  const eff = calcEfficiencyData();
+  const payload = {
+    month_label: fmtM(cur),
+    current: d,
+    prev: dp,
+    efficiency: eff.slice(0, 5).map(t => ({name:t.name, grade:t.grade, score:t.score}))
+  };
+  try {
+    const r = await fetch(BOT_URL + '/send-report', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const res = await r.json();
+    if (res.status === 'ok') toast('✈️ Отчёт отправлен в Telegram!');
+    else toast('❌ Ошибка отправки: ' + (res.message||'неизвестно'));
+  } catch(e) {
+    toast('❌ Не могу достучаться до бота: ' + e.message);
+  }
+}
+
+async function testBot() {
+  const url = document.getElementById('bot-url-input').value.trim();
+  if (!url) { toast('Введи URL бота'); return; }
+  try {
+    const r = await fetch(url + '/ping');
+    const res = await r.json();
+    if (res.status === 'ok') toast('✅ Бот отвечает! ' + res.bot);
+    else toast('⚠️ Бот ответил, но что-то не так');
+  } catch(e) {
+    toast('❌ Бот не отвечает: ' + e.message);
+  }
+}
+
+
+// ── SERVER PUSH FUNCTIONS ──────────────────────────────────
+
+async function pushToServerAndNotify(byM, cur_m) {
+  const secret = localStorage.getItem('as_api_secret') || 'as_secret_2026';
+  const headers = {'Content-Type':'application/json','X-API-Secret': secret};
+  const stored = JSON.parse(localStorage.getItem('as_dash_v4'));
+  let pushed = 0;
+
+  for (const [month, acts] of Object.entries(byM)) {
+    const monthData = stored.months[month];
+    if (!monthData) continue;
+    try {
+      const r = await fetch(BOT_URL + '/upload/activations', {
+        method: 'POST', headers,
+        body: JSON.stringify({month, data: monthData})
+      });
+      const res = await r.json();
+      if (res.status === 'ok') pushed++;
+      else if (res.status === 'skipped') console.log('Skipped closed month:', month);
+    } catch(e) { console.error('Push act error:', e); }
+  }
+
+  if (pushed > 0) {
+    // Теперь триггерим TG отчёт
+    try {
+      const today = new Date();
+      const curM  = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`;
+      const month_label = fmtM(curM);
+      await fetch(BOT_URL + '/send-report', {
+        method: 'POST', headers,
+        body: JSON.stringify({month_label})
+      });
+      toast('✈️ Данные на сервере обновлены, отчёт отправлен в Telegram!');
+    } catch(e) { toast('⚠️ Данные залиты, но TG не ответил'); }
+  }
+}
+
+async function pushPrivlToServer(privl, tot) {
+  const secret = localStorage.getItem('as_api_secret') || 'as_secret_2026';
+  try {
+    await fetch(BOT_URL + '/upload/privl', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','X-API-Secret': secret},
+      body: JSON.stringify({privl, privl_total: tot})
+    });
+    console.log('Privl pushed to server');
+  } catch(e) { console.error('Privl push error:', e); }
+}
+
+renderMonthBtns();
+render();
+// Подгружаем актуальные данные с сервера при открытии
+if (BOT_URL) setTimeout(fetchServerData, 300);
+</script>
+</body>
+</html>

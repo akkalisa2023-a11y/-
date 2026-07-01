@@ -449,7 +449,7 @@ function processActivations(headers, rows){
   const today=new Date();
   const curM=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`;
   Object.entries(byM).forEach(([m,acts])=>{
-    if(stored.months[m]&&m!==curM)return;
+    if(stored.months[m]&&m!==curM&&m!==prevM(curM))return;
     const tpMap={}, prMap={}, ops={};
     acts.forEach(a=>{
       if(!a.r||!a.t)return;

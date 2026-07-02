@@ -390,14 +390,18 @@ def build_privl_callout(tp_list, privl, threshold_count=3, threshold_uniq=2):
     return "\n".join(lines)
 
 
-def build_public_praise(tp_list):
-    """Публичная похвала топа после разбора"""
+def build_public_praise(tp_list, has_bad=False):
+    """Похвала топа — или Валера в отпуске если всё хорошо"""
     if not tp_list:
         return None
     top = tp_list[0]
     name = top['name'].split('(')[0].strip()
-    phrase = random.choice(PRAISE_PUBLIC).format(name=name, acts=top['acts'])
-    return f"\n━━━━━━━━━━━━━━━━━━━━\n💚 <b>НО ЕСТЬ И ХОРОШИЕ НОВОСТИ!</b>\n\n{phrase}\nФёдор гордится! 💪"
+    praise = random.choice(PRAISE_PUBLIC).format(name=name, acts=top['acts'])
+    if not has_bad:
+        vacation = random.choice(VALERA_VACATION)
+        return f"\n━━━━━━━━━━━━━━━━━━━━\n{vacation}\n\n{praise}"
+    else:
+        return f"\n━━━━━━━━━━━━━━━━━━━━\n💚 <b>НО ЕСТЬ И ХОРОШИЕ НОВОСТИ!</b>\n\n{praise}\nФёдор гордится! 💪"
 
 
 def calc_efficiency(d, privl):

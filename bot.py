@@ -222,6 +222,215 @@ def build_personal_report(tp_data, month_label, rank):
         lines += ["", f"📱 <a href='{DASHBOARD_URL}'>Полный дашборд</a>"]
     return "\n".join(lines)
 
+# ── РАЗБОР ПОЛЁТОВ ───────────────────────────────────────────
+
+# ── ФЁДОР И ВАЛЕРА ───────────────────────────────────────────
+
+TRANSFORM_PHRASES = [
+    "😤 Фёдор прочитал отчёт...
+🔄 Фёдор трансформируется...
+💥 <b>ВАЛЕРА АКТИВИРОВАН!</b>",
+    "😒 Фёдор посмотрел на цифры...
+⚡ Внутри что-то щёлкнуло...
+🦁 <b>ВАЛЕРА ВЫШЕЛ НА ОХОТУ!</b>",
+    "🖊️ Фёдор достал красную ручку...
+🌀 Началась трансформация...
+🔥 <b>ВАЛЕРА УЖЕ ЗДЕСЬ!</b>",
+    "📊 Фёдор изучил таблицу...
+😡 Брови сдвинулись...
+💢 <b>ВАЛЕРА БЕРЁТ СЛОВО!</b>",
+]
+
+VALERA_INTRO = [
+    "Привет, это Валера. Настало моё время. 😈",
+    "Валера на связи. Поговорим? 😤",
+    "Это Валера. Я прочитал. Мне есть что сказать. 🗣️",
+    "Валера здесь. И Валера не в восторге. 😠",
+]
+
+FRAUD_RANTS = [
+    "{name}, это Валера. {fraud} фрод-активаций — {pct}%! Ты вообще партнёров проверяешь?! 🚨",
+    "Слушай, {name}! Валера смотрит: {fraud} фродов. Это не случайность — это халтура! Разберись! 😡",
+    "{name}! {fraud} фродов ({pct}%) — Валера так не договаривался! Объяснений жду сегодня! 🔴",
+    "Валера открыл твой раздел, {name}. {fraud} фрод-активаций. Валера закрыл. Валера снова открыл. Всё ещё {fraud}. 😶 Объясняй! 📋",
+]
+
+DROP_RANTS = [
+    "{name}! Было {prev}, стало {cur}. Минус {diff} активаций — {pct}% падения! Валера слушает объяснения! 📉",
+    "Валера смотрит на тебя, {name}. Куда делись {diff} активаций? Партнёры разбежались? Отвечай! 🤔",
+    "{name}, падение на {pct}% — это не рабочий момент, это провал! Валера ждёт план восстановления! 📋",
+    "Слушай {name}, {diff} активаций потеряли! Валера хочет знать — почему и что делаем! 😤",
+]
+
+PRIVL_RANTS = [
+    "{name}! Валера смотрит на привлечение: {count} всего, уникальных {uniq}. Где новые партнёры?! 😤",
+    "{name}, {count} привлечений за месяц — это серьёзно мало! Валера ожидал большего от тебя! 📊",
+    "Слушай {name}, {uniq} уникальных — клиентская база не растёт! Валера не доволен! 🔻",
+    "{name}! Одни субдилеры! {uniq} уникальных из {count}. Валера хочет видеть новые лица в базе! 👥",
+]
+
+VALERA_VACATION = [
+    "😌 Фёдор изучил отчёт...
+✅ Цифры в норме...
+🏖️ <b>Валера сегодня в отпуске!</b>
+
+Всё чисто, команда! Фёдор доволен. Так держать! 💚",
+    "😊 Фёдор проверил данные...
+🎉 Нарушений нет...
+🌴 <b>Валера отдыхает — заслужили!</b>
+
+Отличная работа, команда! Фёдор аплодирует! 👏",
+    "🧐 Фёдор всё проверил...
+✨ Чисто, как слеза...
+🏄 <b>Валера на пляже, его сегодня не ждите!</b>
+
+Так держать! Фёдор гордится командой! 🏆",
+]
+
+PRAISE_PUBLIC = [
+    "💚 И пока Валера отдыхает — отдельный респект <b>{name}</b>!
+{acts} активаций — это машина продаж! 🚀",
+    "💚 Кстати, <b>{name}</b> снова топ!
+{acts} активаций — Фёдор доволен! 👏",
+    "💚 <b>{name}</b> показывает как надо!
+{acts} активаций — берите пример! 🏆",
+]
+
+def build_fraud_callout(tp_list, threshold_pct=15, threshold_abs=10):
+    """Вызов за фрод"""
+    offenders = [t for t in tp_list
+                 if t.get('fraud', 0) >= threshold_abs and t.get('fraud_pct', 0) >= threshold_pct]
+    if not offenders:
+        return None
+
+    lines = [
+        "",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"<b>{random.choice(FYODOR_PHRASES)}</b>",
+        "",
+        "🚨 <b>ФРОД — РАЗБОР ПОЛЁТОВ</b>",
+        "",
+    ]
+    for tp in sorted(offenders, key=lambda x: -x.get('fraud_pct', 0)):
+        name = tp['name'].split('(')[0].strip()
+        rant = random.choice(FRAUD_RANTS).format(
+            name=name,
+            fraud=tp['fraud'],
+            pct=tp['fraud_pct']
+        )
+        lines.append(f"👆 {rant}")
+        lines.append("")
+
+    lines.append("Фёдор ждёт объяснений в личке. ⏰")
+    return "
+".join(lines)
+
+
+def build_drop_callout(tp_list_cur, tp_list_prev, threshold_pct=20):
+    """Вызов за падение активаций"""
+    if not tp_list_prev:
+        return None
+
+    prev_map = {t['name']: t['acts'] for t in tp_list_prev}
+    offenders = []
+    for t in tp_list_cur:
+        prev = prev_map.get(t['name'], 0)
+        if prev == 0:
+            continue
+        diff = t['acts'] - prev
+        drop_pct = round(abs(diff) / prev * 100)
+        if diff < 0 and drop_pct >= threshold_pct:
+            offenders.append({**t, 'prev': prev, 'diff': abs(diff), 'drop_pct': drop_pct})
+
+    if not offenders:
+        return None
+
+    lines = [
+        "",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"<b>{random.choice(FYODOR_PHRASES)}</b>",
+        "",
+        "📉 <b>ПАДЕНИЕ АКТИВАЦИЙ — РАЗБОР ПОЛЁТОВ</b>",
+        "",
+    ]
+    for tp in sorted(offenders, key=lambda x: -x['drop_pct']):
+        name = tp['name'].split('(')[0].strip()
+        rant = random.choice(DROP_RANTS).format(
+            name=name,
+            diff=tp['diff'],
+            pct=tp['drop_pct'],
+            prev=tp['prev'],
+            cur=tp['acts']
+        )
+        lines.append(f"👆 {rant}")
+        lines.append("")
+
+    lines.append("Фёдор ждёт план восстановления. 📋")
+    return "
+".join(lines)
+
+
+def build_privl_callout(tp_list, privl, threshold_count=3, threshold_uniq=2):
+    """Вызов за мало привлечений"""
+    privl_map = {p['n']: p for p in privl}
+
+    # Берём только тех у кого есть данные о привлечении
+    offenders = []
+    for t in tp_list:
+        name = t['name'].split('(')[0].strip()
+        # Ищем в privl_map по частичному совпадению имени
+        pm = None
+        for k, v in privl_map.items():
+            if name.split()[0] in k or k.split()[0] in name:
+                pm = v
+                break
+        if pm is None:
+            continue
+        if pm['v'] <= threshold_count or pm['u'] <= threshold_uniq:
+            offenders.append({**t, 'privl': pm})
+
+    if not offenders:
+        return None
+
+    lines = [
+        "",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"<b>{random.choice(FYODOR_PHRASES)}</b>",
+        "",
+        "👥 <b>МАЛО ПРИВЛЕЧЕНИЙ — РАЗБОР ПОЛЁТОВ</b>",
+        "",
+    ]
+    for tp in offenders[:5]:
+        name = tp['name'].split('(')[0].strip()
+        pm = tp['privl']
+        rant = random.choice(PRIVL_RANTS).format(
+            name=name,
+            count=pm['v'],
+            uniq=pm['u']
+        )
+        lines.append(f"👆 {rant}")
+        lines.append("")
+
+    lines.append("Фёдор ждёт новых партнёров в базе. 📲")
+    return "
+".join(lines)
+
+
+def build_public_praise(tp_list):
+    """Публичная похвала топа после разбора"""
+    if not tp_list:
+        return None
+    top = tp_list[0]
+    name = top['name'].split('(')[0].strip()
+    phrase = random.choice(PRAISE_PUBLIC).format(name=name, acts=top['acts'])
+    return f"
+━━━━━━━━━━━━━━━━━━━━
+💚 <b>НО ЕСТЬ И ХОРОШИЕ НОВОСТИ!</b>
+
+{phrase}
+Фёдор гордится! Берите пример! 💪"
+
+
 def calc_efficiency(d, privl):
     privl_map  = {p["n"]: p for p in privl}
     tp_list    = d.get("tp", [])
@@ -291,11 +500,25 @@ def upload_privl():
         return jsonify({"error": "Unauthorized"}), 401
     payload = request.json
     db      = load_db()
-    db["privl"]       = payload.get("privl", [])
-    db["privl_total"] = payload.get("privl_total", {})
+    # Новый формат: privl_months: {month: {privl:[...], tot:{...}}}
+    privl_months = payload.get("privl_months", {})
+    if privl_months:
+        if "privl_months" not in db:
+            db["privl_months"] = {}
+        # Перезаписываем только те месяцы что пришли
+        for m, data in privl_months.items():
+            db["privl_months"][m] = data
+            logging.info(f"Saved privl month {m}: {data.get('tot',{}).get('v',0)} entries")
+        # Для совместимости: общий privl = данные последнего месяца
+        last_m = sorted(db["privl_months"].keys())[-1]
+        db["privl"]       = db["privl_months"][last_m].get("privl", [])
+        db["privl_total"] = db["privl_months"][last_m].get("tot", {})
+    else:
+        # Старый формат — просто сохраняем
+        db["privl"]       = payload.get("privl", [])
+        db["privl_total"] = payload.get("privl_total", {})
     save_db(db)
-    logging.info(f"Saved privl: {len(db['privl'])} entries")
-    return jsonify({"status": "ok", "count": len(db["privl"])})
+    return jsonify({"status": "ok", "months": list(privl_months.keys()) or ["legacy"]})
 
 # Триггер отчёта в TG (вызывается дашбордом после загрузки)
 @app.route("/send-report", methods=["POST"])
@@ -326,7 +549,29 @@ def send_report():
         text   = build_report(data, month_label)
         result = send_message(text)
         logging.info(f"TG report sent: {result.get('ok')}")
-        return jsonify({"status": "ok", "tg_ok": result.get("ok"), "month": cur_key})
+
+        # Разбор полётов — отдельные сообщения после основного отчёта
+        import time
+        tp_cur  = months[cur_key].get("tp", [])
+        tp_prev = months[prev_key].get("tp", []) if prev_key else []
+        privl   = db.get("privl", [])
+
+        fraud_msg = build_fraud_callout(tp_cur)
+        drop_msg  = build_drop_callout(tp_cur, tp_prev)
+        privl_msg = build_privl_callout(tp_cur, privl)
+        has_bad   = any([fraud_msg, drop_msg, privl_msg])
+        praise_msg = build_public_praise(tp_cur, has_bad=has_bad)
+        callouts = [fraud_msg, drop_msg, privl_msg, praise_msg]
+        sent = 0
+        for msg in callouts:
+            if msg:
+                time.sleep(1)
+                send_message(msg)
+                sent += 1
+                logging.info("Callout sent")
+
+        return jsonify({"status": "ok", "tg_ok": result.get("ok"),
+                        "month": cur_key, "callouts_sent": sent})
     except Exception as e:
         logging.error(f"send_report error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500

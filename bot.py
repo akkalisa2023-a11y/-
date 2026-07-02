@@ -314,7 +314,7 @@ def build_drop_callout(tp_list_cur, tp_list_prev, threshold_pct=20):
         if prev == 0:
             continue
         diff = t['acts'] - prev
-        drop_pct = round(abs(diff) / prev * 100)
+        drop_pct = round(abs(diff) / max(prev, 1) * 100)
         if diff < 0 and drop_pct >= threshold_pct:
             offenders.append({**t, 'prev': prev, 'diff': abs(diff), 'drop_pct': drop_pct})
 
@@ -408,6 +408,7 @@ def calc_efficiency(d, privl):
     max_acts   = max((t["acts"] for t in tp_list), default=1)
     max_p3     = max((t["p3"]   for t in tp_list), default=1)
     max_privl  = max((privl_map.get(t["name"], {}).get("u", 0) for t in tp_list), default=1)
+    max_privl  = max(max_privl, 1)  # защита от деления на ноль
     result = []
     for t in tp_list:
         pm    = privl_map.get(t["name"], {})

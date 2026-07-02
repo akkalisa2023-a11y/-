@@ -2,8 +2,9 @@ import os, json, logging, random
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 CORS(app)
@@ -12,22 +13,44 @@ BOT_TOKEN     = os.environ.get("BOT_TOKEN", "YOUR_TOKEN_HERE")
 CHAT_ID       = os.environ.get("CHAT_ID", "YOUR_CHAT_ID")
 DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "https://ваш-дашборд.com")
 API_SECRET    = os.environ.get("API_SECRET", "as_secret_2026")  # вставь свой секрет в Railway
+OWNER_ID      = os.environ.get("OWNER_ID", "6251390433")  # кому пересылать сообщения торговых и сводки
 
-# Railway хранит файл в /tmp (сбрасывается при рестарте)
-# Для постоянного хранения подключи Railway Volume или Postgres
-DATA_FILE = Path("/tmp/dash_data.json")
+# Кто исключён из отчёта бота (но остаётся в дашборде)
+EXCLUDED_FROM_REPORT = ["Бузина Яна"]
+
+# Через сколько часов после разбора Валеры слать напоминание, если ТП не ответил
+REMINDER_HOURS = float(os.environ.get("REMINDER_HOURS", "2"))
+
+# Railway Volume — постоянное хранилище, подключено на /data.
+# Если вдруг volume не смонтирован (например, локальный запуск), откатываемся на /tmp.
+DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
+try:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _probe = DATA_DIR / ".write_probe"
+    _probe.write_text("ok")
+    _probe.unlink()
+except Exception:
+    logging.warning(f"/data недоступен ({DATA_DIR}), откатываюсь на /tmp — данные будут теряться при рестарте!")
+    DATA_DIR = Path("/tmp")
+
+DATA_FILE = DATA_DIR / "dash_data.json"
 
 logging.basicConfig(level=logging.INFO)
 
 # ── ХРАНИЛИЩЕ ────────────────────────────────────────────────
 
 def load_db():
+    db = {"months": {}, "privl": [], "privl_total": {},
+          "pending_calls": {}, "tp_contacts": {}, "answered_calls": []}
     if DATA_FILE.exists():
         try:
-            return json.loads(DATA_FILE.read_text())
+            db.update(json.loads(DATA_FILE.read_text()))
         except Exception:
             pass
-    return {"months": {}, "privl": [], "privl_total": {}}
+    db.setdefault("pending_calls", {})
+    db.setdefault("tp_contacts", {})
+    db.setdefault("answered_calls", [])
+    return db
 
 def save_db(db):
     DATA_FILE.write_text(json.dumps(db, ensure_ascii=False))
@@ -37,6 +60,29 @@ def save_db(db):
 def check_auth():
     secret = request.headers.get("X-API-Secret") or request.args.get("secret")
     return secret == API_SECRET
+
+# ── СОПОСТАВЛЕНИЕ ИМЁН ТП ↔ TELEGRAM ────────────────────────
+
+def clean_tp_name(name):
+    """Убирает пометки типа '(Торговый New)' из имени ТП"""
+    return name.split("(")[0].strip()
+
+def match_tp_name(query_name, tp_keys):
+    """Ищет имя ТП (query_name — то, что пришло из Telegram) среди списка
+    полных имён ТП (tp_keys), той же логикой частичного совпадения,
+    что уже используется в build_privl_callout."""
+    query_name = (query_name or "").strip()
+    if not query_name:
+        return None
+    q_first = query_name.split()[0].lower() if query_name.split() else ""
+    for k in tp_keys:
+        k_clean = clean_tp_name(k)
+        k_first = k_clean.split()[0].lower() if k_clean.split() else ""
+        if not q_first or not k_first:
+            continue
+        if q_first == k_first or q_first in k_clean.lower() or k_first in query_name.lower():
+            return k
+    return None
 
 # ── ВСЁ ЧТО БЫЛО В ТВОЁМ ФАЙЛЕ ──────────────────────────────
 
@@ -353,11 +399,14 @@ def build_forecast_callout(d, dp):
     return "\n".join(lines)
 
 
+def get_fraud_offenders(tp_list, threshold_pct=15, threshold_abs=10):
+    return [t for t in tp_list
+            if t.get('fraud', 0) >= threshold_abs and t.get('fraud_pct', 0) >= threshold_pct
+            and not any(ex in t["name"] for ex in EXCLUDED_FROM_REPORT)]
+
 def build_fraud_callout(tp_list, threshold_pct=15, threshold_abs=10):
     """Вызов за фрод"""
-    offenders = [t for t in tp_list
-                 if t.get('fraud', 0) >= threshold_abs and t.get('fraud_pct', 0) >= threshold_pct
-                 and not any(ex in t["name"] for ex in EXCLUDED_FROM_REPORT)]
+    offenders = get_fraud_offenders(tp_list, threshold_pct, threshold_abs)
     if not offenders:
         return None
 
@@ -383,14 +432,14 @@ def build_fraud_callout(tp_list, threshold_pct=15, threshold_abs=10):
     return "\n".join(lines)
 
 
-def build_drop_callout(tp_list_cur, tp_list_prev, threshold_pct=20):
-    """Вызов за падение активаций"""
+def get_drop_offenders(tp_list_cur, tp_list_prev, threshold_pct=20):
     if not tp_list_prev:
-        return None
-
+        return []
     prev_map = {t['name']: t['acts'] for t in tp_list_prev}
     offenders = []
     for t in tp_list_cur:
+        if any(ex in t["name"] for ex in EXCLUDED_FROM_REPORT):
+            continue
         prev = prev_map.get(t['name'], 0)
         if prev == 0:
             continue
@@ -398,7 +447,11 @@ def build_drop_callout(tp_list_cur, tp_list_prev, threshold_pct=20):
         drop_pct = round(abs(diff) / max(prev, 1) * 100)
         if diff < 0 and drop_pct >= threshold_pct:
             offenders.append({**t, 'prev': prev, 'diff': abs(diff), 'drop_pct': drop_pct})
+    return offenders
 
+def build_drop_callout(tp_list_cur, tp_list_prev, threshold_pct=20):
+    """Вызов за падение активаций"""
+    offenders = get_drop_offenders(tp_list_cur, tp_list_prev, threshold_pct)
     if not offenders:
         return None
 
@@ -426,15 +479,13 @@ def build_drop_callout(tp_list_cur, tp_list_prev, threshold_pct=20):
     return "\n".join(lines)
 
 
-def build_privl_callout(tp_list, privl, threshold_count=3, threshold_uniq=2):
-    """Вызов за мало привлечений"""
+def get_privl_offenders(tp_list, privl, threshold_count=3, threshold_uniq=2):
     privl_map = {p['n']: p for p in privl}
-
-    # Берём только тех у кого есть данные о привлечении
     offenders = []
     for t in tp_list:
+        if any(ex in t["name"] for ex in EXCLUDED_FROM_REPORT):
+            continue
         name = t['name'].split('(')[0].strip()
-        # Ищем в privl_map по частичному совпадению имени
         pm = None
         for k, v in privl_map.items():
             if name.split()[0] in k or k.split()[0] in name:
@@ -444,7 +495,11 @@ def build_privl_callout(tp_list, privl, threshold_count=3, threshold_uniq=2):
             continue
         if pm['v'] <= threshold_count or pm['u'] <= threshold_uniq:
             offenders.append({**t, 'privl': pm})
+    return offenders
 
+def build_privl_callout(tp_list, privl, threshold_count=3, threshold_uniq=2):
+    """Вызов за мало привлечений"""
+    offenders = get_privl_offenders(tp_list, privl, threshold_count, threshold_uniq)
     if not offenders:
         return None
 
@@ -507,6 +562,89 @@ def calc_efficiency(d, privl):
         result.append({**t, "score": score, "grade": grade})
     return sorted(result, key=lambda x: -x["score"])
 
+# ── ОТСЛЕЖИВАНИЕ ОТВЕТОВ НА РАЗБОР ВАЛЕРЫ ───────────────────
+
+def register_pending_calls(db, offenders_by_reason):
+    """offenders_by_reason: {reason_code: [tp_name, ...]}
+    Добавляет новых нарушителей в db['pending_calls'], не трогая тех,
+    кто уже там ждёт ответа (чтобы не сбрасывать таймер напоминания)."""
+    now_iso = datetime.now().isoformat()
+    pending = db.setdefault("pending_calls", {})
+    for reason, names in offenders_by_reason.items():
+        for name in names:
+            entry = pending.get(name)
+            if entry is None:
+                pending[name] = {"since": now_iso, "reasons": [reason], "reminded": False}
+            elif reason not in entry.get("reasons", []):
+                entry["reasons"].append(reason)
+
+def build_answers_summary(db):
+    """Собирает свод ответов, когда все вызванные на разбор ответили"""
+    answered = db.get("answered_calls", [])
+    if not answered:
+        return None
+    lines = [
+        "<b>📋 Свод ответов по разбору Валеры</b>",
+        f"<i>Все {len(answered)} ответили</i>", "",
+        "━━━━━━━━━━━━━━━━━━━━",
+    ]
+    for a in answered:
+        lines += [
+            f"👤 <b>{a['name']}</b>",
+            f"💬 {a['text']}",
+            ""
+        ]
+    return "\n".join(lines)
+
+def check_reminders():
+    """Раз в N минут проверяет, кто не ответил Валере дольше REMINDER_HOURS,
+    и шлёт напоминание — в личку, если знаем tg id, иначе в группу с тегом по имени."""
+    try:
+        db = load_db()
+        pending = db.get("pending_calls", {})
+        if not pending:
+            return
+        now = datetime.now()
+        changed = False
+        for name, info in pending.items():
+            if info.get("reminded"):
+                continue
+            try:
+                since = datetime.fromisoformat(info["since"])
+            except Exception:
+                continue
+            if now - since < timedelta(hours=REMINDER_HOURS):
+                continue
+            display_name = clean_tp_name(name)
+            contact = db.get("tp_contacts", {}).get(name)
+            if contact and contact.get("id"):
+                send_message(
+                    f"⏰ {display_name.split()[0]}, Валера всё ещё ждёт твой ответ на разбор! "
+                    f"Напиши объяснение прямо сюда, я передам руководителю.",
+                    chat_id=contact["id"]
+                )
+            else:
+                send_message(
+                    f"⏰ <b>{display_name}</b> — Валера уже {REMINDER_HOURS:.0f}ч ждёт ответа на разбор, "
+                    f"а связаться в личку не вышло. Напиши боту @SV_AS_FedorBot напрямую!"
+                )
+            info["reminded"] = True
+            changed = True
+        if changed:
+            save_db(db)
+            logging.info("Reminders sent")
+    except Exception as e:
+        logging.error(f"check_reminders error: {e}")
+
+def maybe_send_summary(db):
+    """Если очередь разборов опустела — шлём владельцу свод и очищаем её"""
+    if not db.get("pending_calls") and db.get("answered_calls"):
+        summary = build_answers_summary(db)
+        if summary:
+            send_message(summary, chat_id=OWNER_ID)
+            logging.info("Answers summary sent to owner")
+        db["answered_calls"] = []
+
 # ── ENDPOINTS ─────────────────────────────────────────────────
 
 @app.route("/tg-webhook", methods=["POST"])
@@ -520,7 +658,7 @@ def tg_webhook():
 
         from_user = msg.get("from", {})
         text = msg.get("text", "")
-        user_name = from_user.get("first_name", "") + " " + from_user.get("last_name", "")
+        user_name = (from_user.get("first_name", "") + " " + from_user.get("last_name", "")).strip()
         username = from_user.get("username", "")
         user_id = from_user.get("id", "")
 
@@ -533,16 +671,45 @@ def tg_webhook():
                 )
             return jsonify({"ok": True})
 
-        # Пересылаем владельцу
+        db = load_db()
+
+        # Запоминаем контакт ТП по имени — на будущее (напоминания, разбор)
+        pending = db.get("pending_calls", {})
+        matched_key = match_tp_name(user_name, pending.keys()) if pending else None
+        if matched_key:
+            db.setdefault("tp_contacts", {})[matched_key] = {"id": user_id, "username": username}
+
+        if matched_key:
+            # Это ответ на разбор Валеры — закрываем вопрос по этому ТП
+            info = pending.pop(matched_key)
+            db.setdefault("answered_calls", []).append({
+                "name": matched_key,
+                "text": text,
+                "answered_at": datetime.now().isoformat(),
+                "reasons": info.get("reasons", []),
+            })
+            forward_text = (
+                f"✅ <b>Ответ на разбор Валеры:</b>\n\n"
+                f"👤 {clean_tp_name(matched_key)}"
+                + (f" (@{username})" if username else "")
+                + f"\n\n💬 {text}"
+            )
+            send_message(forward_text, chat_id=OWNER_ID)
+            send_message("✅ Спасибо! Передал руководителю.", chat_id=user_id)
+            maybe_send_summary(db)
+            save_db(db)
+            logging.info(f"Reply to Valera's callout matched to {matched_key}")
+            return jsonify({"ok": True})
+
+        # Не связано с конкретным разбором — обычная пересылка владельцу
+        save_db(db)
         forward_text = (
             f"📩 <b>Сообщение от торгового:</b>\n\n"
-            f"👤 {user_name.strip()}"
+            f"👤 {user_name}"
             + (f" (@{username})" if username else "")
             + f"\n\n💬 {text}"
         )
         send_message(forward_text, chat_id=OWNER_ID)
-
-        # Подтверждаем отправителю
         send_message("✅ Твоё сообщение получено и передано руководителю!", chat_id=user_id)
 
         logging.info(f"Message forwarded from {user_name} to owner")
@@ -665,6 +832,17 @@ def send_report():
         privl_msg    = build_privl_callout(tp_cur, privl)
         forecast_msg = build_forecast_callout(months[cur_key], months[prev_key] if prev_key else None)
         has_bad      = any([fraud_msg, drop_msg, privl_msg])
+
+        # Ставим нарушителей "на разбор" — чтобы отследить, кто ответил Валере
+        offenders_by_reason = {
+            "fraud": [t["name"] for t in get_fraud_offenders(tp_cur)],
+            "drop":  [t["name"] for t in get_drop_offenders(tp_cur, tp_prev)],
+            "privl": [t["name"] for t in get_privl_offenders(tp_cur, privl)],
+        }
+        if any(offenders_by_reason.values()):
+            db = load_db()
+            register_pending_calls(db, offenders_by_reason)
+            save_db(db)
         praise_msg   = build_public_praise(tp_cur, has_bad=has_bad)
         callouts = [forecast_msg, fraud_msg, drop_msg, privl_msg, praise_msg]
         sent = 0
@@ -699,16 +877,37 @@ def send_personal():
 
 def setup_webhook():
     """Регистрируем webhook в Telegram"""
-    if not BOT_TOKEN or not DASHBOARD_URL or "ваш-дашборд" in DASHBOARD_URL:
+    if not BOT_TOKEN or BOT_TOKEN == "YOUR_TOKEN_HERE":
+        logging.warning("BOT_TOKEN не задан — webhook не регистрирую")
         return
-    webhook_url = f"https://proud-beauty-production.up.railway.app/tg-webhook"
-    r = requests.post(
-        f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
-        json={"url": webhook_url}
-    )
-    logging.info(f"Webhook set: {r.json()}")
+    webhook_url = "https://proud-beauty-production.up.railway.app/tg-webhook"
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
+            json={"url": webhook_url}, timeout=10
+        )
+        logging.info(f"Webhook set: {r.json()}")
+    except Exception as e:
+        logging.error(f"setup_webhook error: {e}")
+
+@app.route("/setup-webhook")
+def setup_webhook_endpoint():
+    """Ручная перерегистрация webhook, на случай если авторегистрация при старте не сработала"""
+    if not check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    setup_webhook()
+    return jsonify({"status": "ok"})
+
+# ── СТАРТ ────────────────────────────────────────────────────
+# Выполняется при импорте модуля — то есть и при обычном запуске (`python bot.py`),
+# и при запуске через gunicorn (который __main__ не вызывает и раньше пропускал этот шаг,
+# из-за чего webhook приходилось регистрировать руками после каждого рестарта).
+setup_webhook()
+
+_scheduler = BackgroundScheduler()
+_scheduler.add_job(check_reminders, "interval", minutes=15, id="valera_reminders")
+_scheduler.start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    setup_webhook()
     app.run(host="0.0.0.0", port=port)

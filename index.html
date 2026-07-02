@@ -186,7 +186,6 @@ tr:last-child td{border-bottom:none}
     <div style="background:var(--card);border:1px solid var(--border2);border-radius:var(--radius);padding:24px;width:380px;max-width:90vw">
       <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:6px">✈️ Telegram бот</div>
       <div style="font-size:11px;color:var(--text3);margin-bottom:16px">После деплоя вставь URL сервера — дашборд будет сам слать отчёты после загрузки Excel</div>
-
       <input id="bot-url-input" type="text" placeholder="https://xxx.railway.app"
         style="width:100%;padding:8px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:13px;font-family:inherit;margin-bottom:8px"
         value="">
@@ -288,7 +287,6 @@ tr:last-child td{border-bottom:none}
 
 <!-- ПРИВЛЕЧЕНИЕ -->
 <div id="tat" style="display:none">
-  <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap" id="privl-month-btns"></div>
   <div class="kgrid" id="kpi-at"></div>
   <div class="g2">
     <div class="card full">
@@ -367,10 +365,6 @@ async function fetchServerData() {
     if (!serverDB.months || !Object.keys(serverDB.months).length) return;
     // Мержим: серверные данные приоритетнее
     Object.assign(DB.months, serverDB.months);
-    // Привлечение по месяцам
-    if (serverDB.privl_months && Object.keys(serverDB.privl_months).length) {
-      DB.privl_months = serverDB.privl_months;
-    }
     if (serverDB.privl && serverDB.privl.length) {
       DB.privl = serverDB.privl;
       DB.privl_total = serverDB.privl_total;
@@ -387,8 +381,6 @@ async function fetchServerData() {
 // ── TELEGRAM BOT CONFIG ─────────────────────────────────────
 // После деплоя бота вставь сюда URL
 let BOT_URL = localStorage.getItem('as_bot_url') || '';
-let actLoaded = false;
-let privlLoaded = false;
 
 function setBotUrl(url) {
   BOT_URL = url.trim();
@@ -456,10 +448,8 @@ function processActivations(headers, rows){
   let added=0;
   const today=new Date();
   const curM=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`;
-  // Простой алгоритм: перезаписываем только те месяцы которые есть в загружаемом файле
-// Если в файле июнь — обновится июнь. Если июль — июль. Всё остальное не трогается.
-Object.entries(byM).forEach(([m,acts])=>{
-    // Всегда перезаписываем месяц если он есть в загружаемом файле
+  Object.entries(byM).forEach(([m,acts])=>{
+    // Разрешаем перезаписывать любой месяц из загружаемого файла
     const tpMap={}, prMap={}, ops={};
     acts.forEach(a=>{
       if(!a.r||!a.t)return;
@@ -498,11 +488,9 @@ Object.entries(byM).forEach(([m,acts])=>{
   DB = stored;
   renderMonthBtns(); render();
   // Пушим на сервер и триггерим TG
-  actLoaded = true;
-  if (BOT_URL && added > 0 && privlLoaded) {
-    setTimeout(() => pushToServerAndNotify(byM, cur_m), 800);
-  } else if (BOT_URL && added > 0 && !privlLoaded) {
-    toast('✅ Активации загружены. Теперь загрузи Привлечение — и отчёт улетит в TG!');
+  // Пушим на сервер и отправляем TG отчёт
+  if (BOT_URL && added > 0) {
+    setTimeout(() => pushToServerAndNotify(byM), 800);
   }
 }
 
@@ -511,17 +499,17 @@ function processPrivl(headers,rows){
   const iT=colIdx(headers,'Как создан');
   const iD=colIdx(headers,'Дата создания');
   if(iN<0||iT<0){
-    toast(`❌ Не найдены столбцы привлечения (iN=${iN}, iT=${iT})`);
+    toast(`❌ Не найдены столбцы привлечения`);
     return;
   }
 
-  // Группируем по месяцам — как в активациях
+  // Группируем по месяцам через "Дата создания"
+  // Перезаписываем ТОЛЬКО те месяцы что есть в файле — остальные не трогаем
   const byMonth={};
   rows.forEach(r=>{
     const n=String(r[iN]||'').trim();
     const t=String(r[iT]||'').trim();
     if(!n||n==='undefined'||n==='null') return;
-    // Определяем месяц из Дата создания
     const month = iD>=0 ? excelToMonth(r[iD]) : null;
     const m = month || 'unknown';
     if(!byMonth[m]) byMonth[m]={};
@@ -531,11 +519,11 @@ function processPrivl(headers,rows){
     if(t==='Субдилер') byMonth[m][n].s++;
   });
 
-  // Сохраняем по месяцам — перезаписываем только те месяцы что есть в файле
   const stored=JSON.parse(localStorage.getItem('as_dash_v4'));
   if(!stored.privl_months) stored.privl_months={};
-  let added=0;
 
+  // Перезаписываем только месяцы из файла
+  const updatedMonths = [];
   Object.entries(byMonth).forEach(([m,nameMap])=>{
     const privl=Object.values(nameMap).sort((a,b)=>b.v-a.v);
     const tot={
@@ -544,24 +532,27 @@ function processPrivl(headers,rows){
       s: privl.reduce((s,x)=>s+x.s,0)
     };
     stored.privl_months[m]={privl, tot};
-    added++;
+    updatedMonths.push(m);
   });
 
-  // Для совместимости: privl и privl_total = данные последнего месяца в файле
-  const lastMonth=Object.keys(byMonth).sort().pop();
-  if(lastMonth && stored.privl_months[lastMonth]){
-    stored.privl=stored.privl_months[lastMonth].privl;
-    stored.privl_total=stored.privl_months[lastMonth].tot;
+  // Для общего privl берём данные последнего месяца из файла
+  const lastMonth = updatedMonths.sort().pop();
+  if(lastMonth){
+    stored.privl = stored.privl_months[lastMonth].privl;
+    stored.privl_total = stored.privl_months[lastMonth].tot;
   }
 
   localStorage.setItem('as_dash_v4',JSON.stringify(stored));
   DB=stored;
-  toast(`✅ Привлечение: ${added} мес. обновлено`);
+  toast(`✅ Привлечение: обновлено ${updatedMonths.length} мес. (${updatedMonths.map(fmtM).join(', ')})`);
   if(BOT_URL) pushPrivlToServer(stored.privl, stored.privl_total);
-  if(document.getElementById('tat').style.display!=='none') renderPrivl();
+  if(document.getElementById('tat').style.display!=='none'){
+    renderPrivlMonthBtns();
+    renderPrivl();
+  }
 }
 
-
+// ─── HELPERS ───────────────────────────────────────────────────
 function sortedMonths(){return Object.keys(DB.months).sort();}
 function prevM(m){const a=sortedMonths();const i=a.indexOf(m);return i>0?a[i-1]:null;}
 function fmtM(m){const[y,mo]=m.split('-');const n=['','Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'];return n[+mo]+' '+y;}
@@ -573,7 +564,21 @@ function renderMonthBtns(){
     ).join('');
 }
 
-function selectMonth(m){cur=m;renderMonthBtns();render();}
+function selectMonth(m){
+  cur=m;
+  renderMonthBtns();
+  render();
+  // Если открыта вкладка Привлечение — обновляем данные для выбранного месяца
+  if(document.getElementById('tat').style.display!=='none'){
+    const stored=JSON.parse(localStorage.getItem('as_dash_v4')||'{}');
+    const pm = DB.privl_months?.[m] || stored.privl_months?.[m];
+    if(pm){ DB.privl=pm.privl; DB.privl_total=pm.tot; renderPrivl(); }
+    // Подсвечиваем нужную кнопку в privl-month-btns
+    document.querySelectorAll('#privl-month-btns .mbtn').forEach(b=>{
+      b.classList.toggle('on', b.textContent===fmtM(m));
+    });
+  }
+}
 
 function render(){
   const d=DB.months[cur], pv=prevM(cur), dp=pv?DB.months[pv]:null;
@@ -765,30 +770,6 @@ function renderPRTable(all,filter){
   }).join('');
 }
 
-function renderPrivlMonthBtns(){
-  // Используем DB (данные с сервера) или fallback на localStorage
-  const privl_months = DB.privl_months ||
-                       JSON.parse(localStorage.getItem('as_dash_v4')||'{}').privl_months || {};
-  const months=Object.keys(privl_months).sort().reverse();
-  const el=document.getElementById('privl-month-btns');
-  if(!el||!months.length) return;
-  el.innerHTML=months.map((m,i)=>
-    `<button class="mbtn${i===0?' on':''}" onclick="selectPrivlMonth('${m}',this)">${fmtM(m)}</button>`
-  ).join('');
-}
-
-function selectPrivlMonth(m, el){
-  document.querySelectorAll('#privl-month-btns .mbtn').forEach(b=>b.classList.remove('on'));
-  el.classList.add('on');
-  // Сначала смотрим в DB (уже подгружено с сервера), потом в localStorage
-  const data = DB.privl_months?.[m] ||
-               JSON.parse(localStorage.getItem('as_dash_v4')||'{}').privl_months?.[m];
-  if(!data) return;
-  DB.privl = data.privl;
-  DB.privl_total = data.tot;
-  renderPrivl();
-}
-
 function renderPrivl(){
   const pt=DB.privl_total;
   const pct=pt?Math.round(pt.u/pt.v*100):0;
@@ -830,8 +811,12 @@ function renderPrivl(){
 // ─── EFFICIENCY ────────────────────────────────────────────────
 function calcEfficiency(){
   const d=DB.months[cur];
+  // Берём привлечение за тот же месяц что выбран
+  const stored=JSON.parse(localStorage.getItem('as_dash_v4')||'{}');
+  const privlForMonth = DB.privl_months?.[cur] || stored.privl_months?.[cur];
+  const privlList = privlForMonth ? privlForMonth.privl : (DB.privl||[]);
   const privlMap={};
-  (DB.privl||[]).forEach(p=>privlMap[p.n]=p);
+  privlList.forEach(p=>privlMap[p.n]=p);
 
   const maxActs=Math.max(...d.tp.map(t=>t.acts),1);
   const maxP3=Math.max(...d.tp.map(t=>t.p3),1);
@@ -891,6 +876,8 @@ function sw(id,el){
   ['sv','tp','pr','at','ef'].forEach(t=>document.getElementById('t'+t).style.display=t===id?'':'none');
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
   el.classList.add('on');
+  // На Привлечение — прячем верхние кнопки, там свои
+  document.getElementById('month-btns').style.display = id==='at' ? 'none' : 'flex';
   if(id==='at'){renderPrivlMonthBtns();renderPrivl();}
   if(id==='ef')renderEfficiency();
 }
@@ -965,7 +952,7 @@ async function testBot() {
 
 // ── SERVER PUSH FUNCTIONS ──────────────────────────────────
 
-async function pushToServerAndNotify(byM, cur_m) {
+async function pushToServerAndNotify(byM) {
   const secret = localStorage.getItem('as_api_secret') || 'as_secret_2026';
   const headers = {'Content-Type':'application/json','X-API-Secret': secret};
   const stored = JSON.parse(localStorage.getItem('as_dash_v4'));
@@ -1002,17 +989,13 @@ async function pushToServerAndNotify(byM, cur_m) {
 
 async function pushPrivlToServer(privl, tot) {
   const secret = localStorage.getItem('as_api_secret') || 'as_secret_2026';
-  // Берём privl_months из localStorage и шлём на сервер
-  const stored = JSON.parse(localStorage.getItem('as_dash_v4')||'{}');
-  const privl_months = stored.privl_months || {};
   try {
-    const r = await fetch(BOT_URL + '/upload/privl', {
+    await fetch(BOT_URL + '/upload/privl', {
       method: 'POST',
       headers: {'Content-Type':'application/json','X-API-Secret': secret},
-      body: JSON.stringify({privl_months, privl, privl_total: tot})
+      body: JSON.stringify({privl, privl_total: tot})
     });
-    const res = await r.json();
-    console.log('Privl pushed to server:', res);
+    console.log('Privl pushed to server');
   } catch(e) { console.error('Privl push error:', e); }
 }
 

@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+CORS(app)
 
 BOT_TOKEN     = os.environ.get("BOT_TOKEN", "YOUR_TOKEN_HERE")
 CHAT_ID       = os.environ.get("CHAT_ID", "YOUR_CHAT_ID")
@@ -187,7 +187,7 @@ def build_report(data, month_label):
         for ins in insights:
             lines.append(ins)
 
-    if DASHBOARD_URL and DASHBOARD_URL != "https://ваш-дашборд.com":
+    if DASHBOARD_URL and "ваш-дашборд" not in DASHBOARD_URL:
         lines += ["", "━━━━━━━━━━━━━━━━━━━━",
                   f"📱 <a href='{DASHBOARD_URL}'>Открыть полный дашборд →</a>"]
 
@@ -218,7 +218,7 @@ def build_personal_report(tp_data, month_label, rank):
         f"👥 Партнёров: <b>{partners}</b>  (3+: {p3} | 10+: {p10})",
         f"🚨 Фрод: <b>{fraud}</b> акт. ({fraud_pct}%) — обрати внимание!" if fraud > 0 else "✅ Фрода нет — чисто!",
     ]
-    if DASHBOARD_URL and DASHBOARD_URL != "https://ваш-дашборд.com":
+    if DASHBOARD_URL and "ваш-дашборд" not in DASHBOARD_URL:
         lines += ["", f"📱 <a href='{DASHBOARD_URL}'>Полный дашборд</a>"]
     return "\n".join(lines)
 
@@ -283,7 +283,7 @@ def build_fraud_callout(tp_list, threshold_pct=15, threshold_abs=10):
     lines = [
         "",
         "━━━━━━━━━━━━━━━━━━━━",
-        f"<b>{random.choice(FYODOR_PHRASES)}</b>",
+        f"<b>{random.choice(TRANSFORM_PHRASES)}</b>",
         "",
         "🚨 <b>ФРОД — РАЗБОР ПОЛЁТОВ</b>",
         "",
@@ -324,7 +324,7 @@ def build_drop_callout(tp_list_cur, tp_list_prev, threshold_pct=20):
     lines = [
         "",
         "━━━━━━━━━━━━━━━━━━━━",
-        f"<b>{random.choice(FYODOR_PHRASES)}</b>",
+        f"<b>{random.choice(TRANSFORM_PHRASES)}</b>",
         "",
         "📉 <b>ПАДЕНИЕ АКТИВАЦИЙ — РАЗБОР ПОЛЁТОВ</b>",
         "",
@@ -370,7 +370,7 @@ def build_privl_callout(tp_list, privl, threshold_count=3, threshold_uniq=2):
     lines = [
         "",
         "━━━━━━━━━━━━━━━━━━━━",
-        f"<b>{random.choice(FYODOR_PHRASES)}</b>",
+        f"<b>{random.choice(TRANSFORM_PHRASES)}</b>",
         "",
         "👥 <b>МАЛО ПРИВЛЕЧЕНИЙ — РАЗБОР ПОЛЁТОВ</b>",
         "",
@@ -496,9 +496,8 @@ def send_report():
         return jsonify({"error": "Unauthorized"}), 401
     try:
         payload     = request.json or {}
-        month_label = payload.get("month_label", "текущий месяц")
 
-        # Берём данные с сервера, а не из payload (они уже сохранены)
+        # Берём данные с сервера
         db          = load_db()
         months      = db.get("months", {})
         if not months:
@@ -507,6 +506,13 @@ def send_report():
         sorted_keys = sorted(months.keys())
         cur_key     = sorted_keys[-1]
         prev_key    = sorted_keys[-2] if len(sorted_keys) > 1 else None
+
+        # month_label — всегда берём из реальных данных, не из payload
+        def fmt_month(m):
+            y, mo = m.split("-")
+            names = ["","Янв","Фев","Мар","Апр","Май","Июн","Июл","Авг","Сен","Окт","Ноя","Дек"]
+            return names[int(mo)] + " " + y
+        month_label = fmt_month(cur_key)
 
         eff = calc_efficiency(months[cur_key], db.get("privl", []))
 

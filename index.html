@@ -287,7 +287,6 @@ tr:last-child td{border-bottom:none}
 
 <!-- ПРИВЛЕЧЕНИЕ -->
 <div id="tat" style="display:none">
-  <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap" id="privl-month-btns"></div>
   <div class="kgrid" id="kpi-at"></div>
   <div class="g2">
     <div class="card full">
@@ -441,8 +440,21 @@ function processActivations(headers, rows){
   rows.forEach(r=>{
     const m=excelToMonth(r[iD]); if(!m)return;
     if(!byM[m])byM[m]=[];
+    // Сохраняем дату для расчёта прогноза
+    const dateVal = r[iD];
+    let dateStr = null;
+    if(dateVal) {
+      if(typeof dateVal==='string'){
+        const dm=dateVal.match(/^(\d{2})\.(\d{2})\.(\d{4})/);
+        if(dm) dateStr=`${dm[3]}-${dm[2]}-${dm[1]}`;
+      } else if(typeof dateVal==='number'){
+        const dd=new Date(Math.round((dateVal-25569)*86400*1000));
+        dateStr=`${dd.getUTCFullYear()}-${String(dd.getUTCMonth()+1).padStart(2,'0')}-${String(dd.getUTCDate()).padStart(2,'0')}`;
+      }
+    }
     byM[m].push({r:String(r[iR]||'').trim(), t:String(r[iT]||'').trim(),
                   op:String(r[iO]||'').trim(),
+                  date: dateStr,
                   fraud: iPR>=0 && String(r[iPR]||'').trim()==='Фрод'});
   });
   const stored=JSON.parse(localStorage.getItem('as_dash_v4'));
@@ -475,10 +487,24 @@ function processActivations(headers, rows){
     const actsByR={};acts.forEach(a=>{actsByR[a.r]=(actsByR[a.r]||0)+1;});
     const vals=Object.values(actsByR);
     const ft=acts.filter(a=>a.fraud).length;
+    
+    // Считаем прогноз по темпу
+    const dates = acts.map(a=>a.date).filter(Boolean).sort();
+    const lastDate = dates[dates.length-1]; // последняя дата активации
+    let forecast = null;
+    if(lastDate) {
+      const [y,mo,d] = lastDate.split('-').map(Number);
+      const daysInMonth = new Date(y, mo, 0).getDate();
+      const daysPassed = d;
+      const total = acts.length;
+      forecast = Math.round(total / daysPassed * daysInMonth);
+    }
+    
     stored.months[m]={total:acts.length,ap:Object.keys(actsByR).length,
       p3:vals.filter(v=>v>=3).length,p10:vals.filter(v=>v>=10).length,
       avg:+(acts.length/Object.keys(actsByR).length).toFixed(1),
       fraud:ft,fraud_pct:+(ft/acts.length*100).toFixed(1),
+      forecast, last_date: lastDate,
       tp:tpList,partners:prList,ops};
     added++;
   });
@@ -603,8 +629,22 @@ function renderKPI(d,dp,pv){
   const tStr=pct===null?'&nbsp;':`${pct>=0?'↑':'↓'}${Math.abs(pct)}% vs ${fmtM(pv)}`;
   const fraudPct=d.fraud_pct||0;
   const fraudCls=fraudPct>20?'red':fraudPct>10?'amber':'';
+  // Прогноз
+  const forecast = d.forecast;
+  const lastDate = d.last_date;
+  let forecastStr = '';
+  let forecastSub = '';
+  if(forecast && lastDate) {
+    const [y,mo,day] = lastDate.split('-').map(Number);
+    const daysInMonth = new Date(y, mo, 0).getDate();
+    const pct = Math.round((d.total/forecast)*100);
+    forecastStr = forecast.toLocaleString('ru');
+    forecastSub = `факт по ${day}-е | ${pct}% выполнения`;
+  }
+  
   document.getElementById('kpi-sv').innerHTML=`
-    <div class="kc"><div class="kl">Активаций</div><div class="kv">${d.total.toLocaleString('ru')}</div><div class="ks ${tCls}">${tStr}</div></div>
+    <div class="kc"><div class="kl">Активаций (факт)</div><div class="kv">${d.total.toLocaleString('ru')}</div><div class="ks ${tCls}">${tStr}</div></div>
+    ${forecast ? `<div class="kc" style="border-color:rgba(74,210,134,0.35)"><div class="kl">📈 Прогноз на месяц</div><div class="kv" style="color:var(--mint)">${forecastStr}</div><div class="ks">${forecastSub}</div></div>` : ''}
     <div class="kc"><div class="kl">Активных партнёров</div><div class="kv">${d.ap}</div><div class="ks">${dp?`vs ${dp.ap} пред.`:'&nbsp;'}</div></div>
     <div class="kc"><div class="kl">Партнёров 3+</div><div class="kv">${d.p3}</div><div class="ks">${Math.round(d.p3/d.ap*100)}% от активных</div></div>
     <div class="kc"><div class="kl">Партнёров 10+</div><div class="kv">${d.p10}</div><div class="ks">${Math.round(d.p10/d.ap*100)}% от активных</div></div>
@@ -680,12 +720,19 @@ function renderMainChart(){
   const vals=months.map(m=>DB.months[m].total);
   const fraudVals=months.map(m=>DB.months[m].fraud||0);
   const barColors=months.map(m=>m===cur?'#4ad286':'rgba(74,210,134,0.22)');
+  // Прогноз для текущего месяца
+  const forecastVals = months.map(m => DB.months[m].forecast || null);
+  
   mainC=new Chart(document.getElementById('mainChart'),{
     type:'bar',
     data:{labels:months.map(fmtM), datasets:[
       {label:'Активации',data:vals,backgroundColor:barColors,borderRadius:5,order:2},
       {label:'Фрод',data:fraudVals,type:'line',borderColor:'#e84040',backgroundColor:'rgba(232,64,64,0.1)',
-       tension:0.4,pointBackgroundColor:'#e84040',pointRadius:3,borderWidth:2,fill:true,order:1}
+       tension:0.4,pointBackgroundColor:'#e84040',pointRadius:3,borderWidth:2,fill:true,order:1},
+      {label:'Прогноз',data:forecastVals,type:'line',borderColor:'#4ad286',
+       borderDash:[6,4],borderWidth:2,pointBackgroundColor:'#4ad286',pointRadius:4,
+       backgroundColor:'transparent',tension:0,order:0,
+       pointStyle:'star'}
     ]},
     options:{responsive:true,maintainAspectRatio:false,
       plugins:{legend:{labels:{color:'#7fa88f',font:{size:11},boxWidth:10}},

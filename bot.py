@@ -127,11 +127,20 @@ def build_report(data, month_label):
     p10       = d.get("p10", 0)
     fraud     = d.get("fraud", 0)
     fraud_pct = d.get("fraud_pct", 0)
+    forecast  = d.get("forecast")
+    last_date = d.get("last_date", "")
 
     trend = ""
     if prev:
         diff  = total - prev.get("total", 0)
         trend = f" {'📈 +' if diff >= 0 else '📉 '}{diff} vs пред. мес."
+
+    # Прогноз
+    forecast_str = ""
+    if forecast and last_date:
+        day = int(last_date.split("-")[2]) if last_date else 0
+        pct = round(total/forecast*100) if forecast else 0
+        forecast_str = f"\n📈 <b>Прогноз на месяц:</b> {forecast:,} акт. (факт по {day}-е — {pct}% выполнения)".replace(",", " ")
 
     lines += [
         "━━━━━━━━━━━━━━━━━━━━",
@@ -272,6 +281,77 @@ PRAISE_PUBLIC = [
     "💚 Кстати, <b>{name}</b> снова топ!\n{acts} активаций — Фёдор доволен! 👏",
     "💚 <b>{name}</b> показывает как надо!\n{acts} активаций — берите пример! 🏆",
 ]
+
+def build_forecast_callout(d, dp):
+    """Вызов/похвала на основе прогноза"""
+    forecast = d.get("forecast")
+    last_date = d.get("last_date", "")
+    total = d.get("total", 0)
+    
+    if not forecast or not last_date:
+        return None
+    
+    day = int(last_date.split("-")[2]) if last_date else 0
+    pct = round(total/forecast*100) if forecast else 0
+    
+    prev_total = dp.get("total", 0) if dp else 0
+    
+    lines = ["", "━━━━━━━━━━━━━━━━━━━━"]
+    
+    if prev_total and forecast >= prev_total * 1.1:
+        # Прогноз превышает прошлый месяц на 10%+
+        growth = round((forecast - prev_total) / prev_total * 100)
+        lines += [
+            f"🚀 <b>ПРОГНОЗ МЕСЯЦА</b>",
+            "",
+            f"📈 При текущем темпе выйдем на <b>{forecast:,} активаций</b>".replace(",", " "),
+            f"Это <b>+{growth}%</b> к прошлому месяцу ({prev_total:,})!".replace(",", " "),
+            f"Данные по {day}-е числу — {pct}% выполнения.",
+            "",
+            "💪 Команда жжёт! Фёдор доволен. Держим темп!",
+        ]
+    elif prev_total and forecast < prev_total * 0.9:
+        # Прогноз ниже прошлого месяца на 10%+
+        drop = round((prev_total - forecast) / prev_total * 100)
+        lines += [
+            f"{random.choice(TRANSFORM_PHRASES)}",
+            "",
+            f"<i>{random.choice(VALERA_INTRO)}</i>",
+            "",
+            f"📉 <b>ПРОГНОЗ НИЖЕ ПРОШЛОГО МЕСЯЦА</b>",
+            "",
+            f"При текущем темпе выйдем на <b>{forecast:,} акт.</b>".replace(",", " "),
+            f"Прошлый месяц был <b>{prev_total:,}</b> — падение на <b>{drop}%</b>!".replace(",", " "),
+            f"Данные по {day}-е числу — осталось {100-pct}% месяца.",
+            "",
+            "Валера ждёт объяснений и план действий! 📋",
+        ]
+    elif pct < 40 and day > 15:
+        # После середины месяца выполнено меньше 40%
+        lines += [
+            f"{random.choice(TRANSFORM_PHRASES)}",
+            "",
+            f"<i>{random.choice(VALERA_INTRO)}</i>",
+            "",
+            f"⚠️ <b>ТЕМП СЛАБЫЙ</b>",
+            "",
+            f"По {day}-е числу факт <b>{total:,} акт.</b> — только {pct}% от прогноза.".replace(",", " "),
+            f"Прогноз на месяц: <b>{forecast:,} акт.</b>".replace(",", " "),
+            "",
+            "Валера смотрит и хмурится. Нужно прибавить! 💢",
+        ]
+    else:
+        # Всё нормально
+        lines += [
+            f"📊 <b>ПРОГНОЗ МЕСЯЦА</b>",
+            "",
+            f"При текущем темпе: <b>{forecast:,} акт.</b>".replace(",", " "),
+            f"Данные по {day}-е числу — {pct}% выполнения.",
+            "Фёдор следит за динамикой 👀",
+        ]
+    
+    return "\n".join(lines)
+
 
 def build_fraud_callout(tp_list, threshold_pct=15, threshold_abs=10):
     """Вызов за фрод"""
@@ -580,12 +660,13 @@ def send_report():
         tp_prev = months[prev_key].get("tp", []) if prev_key else []
         privl   = db.get("privl", [])
 
-        fraud_msg = build_fraud_callout(tp_cur)
-        drop_msg  = build_drop_callout(tp_cur, tp_prev)
-        privl_msg = build_privl_callout(tp_cur, privl)
-        has_bad   = any([fraud_msg, drop_msg, privl_msg])
-        praise_msg = build_public_praise(tp_cur, has_bad=has_bad)
-        callouts = [fraud_msg, drop_msg, privl_msg, praise_msg]
+        fraud_msg    = build_fraud_callout(tp_cur)
+        drop_msg     = build_drop_callout(tp_cur, tp_prev)
+        privl_msg    = build_privl_callout(tp_cur, privl)
+        forecast_msg = build_forecast_callout(months[cur_key], months[prev_key] if prev_key else None)
+        has_bad      = any([fraud_msg, drop_msg, privl_msg])
+        praise_msg   = build_public_praise(tp_cur, has_bad=has_bad)
+        callouts = [forecast_msg, fraud_msg, drop_msg, privl_msg, praise_msg]
         sent = 0
         for msg in callouts:
             if msg:

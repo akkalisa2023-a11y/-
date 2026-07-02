@@ -365,13 +365,25 @@ async function fetchServerData() {
     if (!serverDB.months || !Object.keys(serverDB.months).length) return;
     // Мержим: серверные данные приоритетнее
     Object.assign(DB.months, serverDB.months);
-    if (serverDB.privl && serverDB.privl.length) {
+    if (serverDB.privl_months && Object.keys(serverDB.privl_months).length) {
+      if (!DB.privl_months) DB.privl_months = {};
+      Object.assign(DB.privl_months, serverDB.privl_months);
+      const lastPrivlMonth = Object.keys(DB.privl_months).sort().pop();
+      if (lastPrivlMonth) {
+        DB.privl = DB.privl_months[lastPrivlMonth].privl;
+        DB.privl_total = DB.privl_months[lastPrivlMonth].tot;
+      }
+    } else if (serverDB.privl && serverDB.privl.length) {
       DB.privl = serverDB.privl;
       DB.privl_total = serverDB.privl_total;
     }
     localStorage.setItem('as_dash_v4', JSON.stringify(DB));
     renderMonthBtns();
     render();
+    if (document.getElementById('tat').style.display !== 'none') {
+      renderPrivlMonthBtns();
+      renderPrivl();
+    }
     console.log('Server data loaded:', Object.keys(serverDB.months));
   } catch(e) {
     console.warn('Server unavailable, using local data:', e.message);
@@ -572,7 +584,7 @@ function processPrivl(headers,rows){
   localStorage.setItem('as_dash_v4',JSON.stringify(stored));
   DB=stored;
   toast(`✅ Привлечение: обновлено ${updatedMonths.length} мес. (${updatedMonths.map(fmtM).join(', ')})`);
-  if(BOT_URL) pushPrivlToServer(stored.privl, stored.privl_total);
+  if(BOT_URL) pushPrivlToServer(stored.privl_months);
   if(document.getElementById('tat').style.display!=='none'){
     renderPrivlMonthBtns();
     renderPrivl();
@@ -1058,15 +1070,15 @@ async function pushToServerAndNotify(byM) {
   }
 }
 
-async function pushPrivlToServer(privl, tot) {
+async function pushPrivlToServer(privlMonths) {
   const secret = localStorage.getItem('as_api_secret') || 'as_secret_2026';
   try {
     await fetch(BOT_URL + '/upload/privl', {
       method: 'POST',
       headers: {'Content-Type':'application/json','X-API-Secret': secret},
-      body: JSON.stringify({privl, privl_total: tot})
+      body: JSON.stringify({privl_months: privlMonths})
     });
-    console.log('Privl pushed to server');
+    console.log('Privl pushed to server:', Object.keys(privlMonths||{}));
   } catch(e) { console.error('Privl push error:', e); }
 }
 

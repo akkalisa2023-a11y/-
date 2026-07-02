@@ -276,7 +276,8 @@ PRAISE_PUBLIC = [
 def build_fraud_callout(tp_list, threshold_pct=15, threshold_abs=10):
     """Вызов за фрод"""
     offenders = [t for t in tp_list
-                 if t.get('fraud', 0) >= threshold_abs and t.get('fraud_pct', 0) >= threshold_pct]
+                 if t.get('fraud', 0) >= threshold_abs and t.get('fraud_pct', 0) >= threshold_pct
+                 and not any(ex in t["name"] for ex in EXCLUDED_FROM_REPORT)]
     if not offenders:
         return None
 
@@ -428,6 +429,49 @@ def calc_efficiency(d, privl):
 
 # ── ENDPOINTS ─────────────────────────────────────────────────
 
+@app.route("/tg-webhook", methods=["POST"])
+def tg_webhook():
+    """Принимает сообщения от пользователей боту и пересылает владельцу"""
+    try:
+        data = request.json
+        msg = data.get("message", {})
+        if not msg:
+            return jsonify({"ok": True})
+
+        from_user = msg.get("from", {})
+        text = msg.get("text", "")
+        user_name = from_user.get("first_name", "") + " " + from_user.get("last_name", "")
+        username = from_user.get("username", "")
+        user_id = from_user.get("id", "")
+
+        if not text or text.startswith("/"):
+            # Отвечаем на /start
+            if text == "/start":
+                send_message(
+                    f"👋 Привет! Это бот АС — партнёрский дашборд.\n\nЕсли Валера вызвал тебя на разбор — пиши объяснение прямо сюда, я передам руководителю.",
+                    chat_id=user_id
+                )
+            return jsonify({"ok": True})
+
+        # Пересылаем владельцу
+        forward_text = (
+            f"📩 <b>Сообщение от торгового:</b>\n\n"
+            f"👤 {user_name.strip()}"
+            + (f" (@{username})" if username else "")
+            + f"\n\n💬 {text}"
+        )
+        send_message(forward_text, chat_id=OWNER_ID)
+
+        # Подтверждаем отправителю
+        send_message("✅ Твоё сообщение получено и передано руководителю!", chat_id=user_id)
+
+        logging.info(f"Message forwarded from {user_name} to owner")
+        return jsonify({"ok": True})
+    except Exception as e:
+        logging.error(f"Webhook error: {e}")
+        return jsonify({"ok": True})
+
+
 @app.route("/ping")
 def ping():
     db = load_db()
@@ -572,6 +616,18 @@ def send_personal():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+def setup_webhook():
+    """Регистрируем webhook в Telegram"""
+    if not BOT_TOKEN or not DASHBOARD_URL or "ваш-дашборд" in DASHBOARD_URL:
+        return
+    webhook_url = f"https://proud-beauty-production.up.railway.app/tg-webhook"
+    r = requests.post(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
+        json={"url": webhook_url}
+    )
+    logging.info(f"Webhook set: {r.json()}")
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    setup_webhook()
     app.run(host="0.0.0.0", port=port)

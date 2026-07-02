@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins=["https://akkalisa2023-a11y.github.io", "http://localhost:5000", "null"])
 
 BOT_TOKEN     = os.environ.get("BOT_TOKEN", "YOUR_TOKEN_HERE")
 CHAT_ID       = os.environ.get("CHAT_ID", "YOUR_CHAT_ID")

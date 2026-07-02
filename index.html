@@ -770,6 +770,29 @@ function renderPRTable(all,filter){
   }).join('');
 }
 
+function renderPrivlMonthBtns(){
+  const stored=JSON.parse(localStorage.getItem('as_dash_v4')||'{}');
+  const privl_months = DB.privl_months || stored.privl_months || {};
+  const months=Object.keys(privl_months).sort().reverse();
+  const el=document.getElementById('privl-month-btns');
+  if(!el) return;
+  if(!months.length){ el.innerHTML=''; return; }
+  el.innerHTML=months.map((m,i)=>
+    `<button class="mbtn${m===cur?' on':''}" onclick="selectPrivlMonth('${m}',this)">${fmtM(m)}</button>`
+  ).join('');
+}
+
+function selectPrivlMonth(m, el){
+  document.querySelectorAll('#privl-month-btns .mbtn').forEach(b=>b.classList.remove('on'));
+  el.classList.add('on');
+  const stored=JSON.parse(localStorage.getItem('as_dash_v4')||'{}');
+  const data = DB.privl_months?.[m] || stored.privl_months?.[m];
+  if(!data) return;
+  DB.privl = data.privl;
+  DB.privl_total = data.tot;
+  renderPrivl();
+}
+
 function renderPrivl(){
   const pt=DB.privl_total;
   const pct=pt?Math.round(pt.u/pt.v*100):0;

@@ -830,7 +830,17 @@ def send_report():
             return names[int(mo)] + " " + y
         month_label = fmt_month(cur_key)
 
-        eff = calc_efficiency(months[cur_key], db.get("privl", []))
+        def privl_for_month(month_key):
+            """Привлечение строго за тот же месяц, что и активации в отчёте —
+            а не просто 'последний когда-либо залитый месяц привлечения',
+            чтобы не смешивать разные месяцы в эффективности/разборе."""
+            pm = db.get("privl_months", {}).get(month_key)
+            if pm is not None:
+                return pm.get("privl", [])
+            # Нет помесячных данных за этот месяц — старый формат/фолбэк
+            return db.get("privl", [])
+
+        eff = calc_efficiency(months[cur_key], privl_for_month(cur_key))
 
         data = {
             "current":    months[cur_key],
@@ -845,7 +855,7 @@ def send_report():
         import time
         tp_cur  = months[cur_key].get("tp", [])
         tp_prev = months[prev_key].get("tp", []) if prev_key else []
-        privl   = db.get("privl", [])
+        privl   = privl_for_month(cur_key)
 
         last_date     = months[cur_key].get("last_date", "")
         days_in_month = calendar.monthrange(*[int(x) for x in cur_key.split("-")])[1]

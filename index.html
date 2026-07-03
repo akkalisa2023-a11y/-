@@ -18,7 +18,7 @@
   --radius:12px;--radius-sm:8px;
   /* operator colors */
   --beeline:#FFD700;--beeline2:#1a1a1a;
-  --mega:#830051;--mega2:#00B956;
+  --mega:#00B956;--mega2:#830051;
   --mts:#E30611;
   --yota:#00D4CC;
   --t2:#FF0090;--t2b:#1a1a1a;
@@ -333,12 +333,12 @@ const PHRASES = {
 
 const OP_COLORS = {
   'Билайн':   {bg:'#FFD700', text:'#1a1a1a', border:'#E6C200'},
-  'Мегафон':  {bg:'#830051', text:'#ffffff', border:'#5c0038'},
+  'Мегафон':  {bg:'#00B956', text:'#ffffff', border:'#00863e'},
   'МТС':      {bg:'#E30611', text:'#ffffff', border:'#b80510'},
   'Yota':     {bg:'#00D4CC', text:'#000000', border:'#00aaa3'},
   'Tele2':    {bg:'#FF0090', text:'#ffffff', border:'#cc0073'},
 };
-const OP_CHART_COLORS = ['#FFD700','#830051','#E30611','#00D4CC','#FF0090'];
+const OP_CHART_COLORS = ['#FFD700','#00B956','#E30611','#00D4CC','#FF0090'];
 
 // ── SERVER MODE ──────────────────────────────────────────────
 // Когда BOT_URL задан — данные хранятся на сервере
@@ -393,7 +393,12 @@ async function fetchServerData() {
 
 // ── TELEGRAM BOT CONFIG ─────────────────────────────────────
 // После деплоя бота вставь сюда URL
-let BOT_URL = localStorage.getItem('as_bot_url') || '';
+// Адрес сервера зашит по умолчанию — чтобы ВСЕ, кто открывает ссылку на дашборд
+// (включая торговых), сразу подтягивали свежие данные с сервера, а не только
+// тот браузер, где вручную настроили через кнопку "✈️ TG".
+// Если понадобится сменить сервер — через кнопку TG можно переопределить локально.
+const DEFAULT_BOT_URL = 'https://proud-beauty-production.up.railway.app';
+let BOT_URL = localStorage.getItem('as_bot_url') || DEFAULT_BOT_URL;
 
 function setBotUrl(url) {
   BOT_URL = url.trim();

@@ -323,9 +323,9 @@ VALERA_VACATION = [
 ]
 
 PRAISE_PUBLIC = [
-    "💚 И пока Валера отдыхает — отдельный респект <b>{name}</b>!\n{acts} активаций — это машина продаж! 🚀",
-    "💚 Кстати, <b>{name}</b> снова топ!\n{acts} активаций — Фёдор доволен! 👏",
-    "💚 <b>{name}</b> показывает как надо!\n{acts} активаций — берите пример! 🏆",
+    "💚 И пока Валера отдыхает — отдельный респект <b>{name}</b>!\nПо прогнозу на месяц {acts} активаций — это машина продаж! 🚀",
+    "💚 Кстати, <b>{name}</b> снова топ по прогнозу месяца!\n{acts} акт. — Фёдор доволен! 👏",
+    "💚 <b>{name}</b> показывает как надо!\nПрогноз {acts} активаций — берите пример! 🏆",
 ]
 
 def build_forecast_callout(d, dp, show_transform=True):
@@ -530,13 +530,23 @@ def build_privl_callout(tp_list, privl, threshold_count=3, threshold_uniq=2, sho
     return "\n".join(lines)
 
 
-def build_public_praise(tp_list, has_bad=False):
-    """Похвала топа — или Валера в отпуске если всё хорошо"""
-    if not tp_list:
+def build_public_praise(tp_list, has_bad=False, last_date=None, days_in_month=None):
+    """Похвала топа — по прогнозируемому темпу на месяц (не по сырому факту на сегодня),
+    и в сравнении с остальными ТП. Или Валера в отпуске, если всё хорошо."""
+    candidates = [t for t in tp_list if not any(ex in t["name"] for ex in EXCLUDED_FROM_REPORT)]
+    if not candidates:
         return None
-    top = tp_list[0]
+
+    day = int(last_date.split("-")[2]) if last_date else None
+    def forecast_for(t):
+        if day and days_in_month and day > 0:
+            return round(t['acts'] / day * days_in_month)
+        return t['acts']
+
+    top = max(candidates, key=forecast_for)
+    top_forecast = forecast_for(top)
     name = top['name'].split('(')[0].strip()
-    praise = random.choice(PRAISE_PUBLIC).format(name=name, acts=top['acts'])
+    praise = random.choice(PRAISE_PUBLIC).format(name=name, acts=top_forecast)
     if not has_bad:
         vacation = random.choice(VALERA_VACATION)
         return f"\n━━━━━━━━━━━━━━━━━━━━\n{vacation}\n\n{praise}"
@@ -874,7 +884,7 @@ def send_report():
             db = load_db()
             register_pending_calls(db, offenders_by_reason)
             save_db(db)
-        praise_msg   = build_public_praise(tp_cur, has_bad=has_bad)
+        praise_msg   = build_public_praise(tp_cur, has_bad=has_bad, last_date=last_date, days_in_month=days_in_month)
         callouts = [forecast_msg, fraud_msg, drop_msg, privl_msg, praise_msg]
         sent = 0
         for msg in callouts:

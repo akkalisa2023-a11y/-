@@ -1,4 +1,4 @@
-import os, json, logging, random
+import os, json, logging, random, calendar
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
@@ -303,10 +303,10 @@ FRAUD_RANTS = [
 ]
 
 DROP_RANTS = [
-    "{name}! Было {prev}, стало {cur}. Минус {diff} активаций — {pct}% падения! Валера слушает объяснения! 📉",
-    "Валера смотрит на тебя, {name}. Куда делись {diff} активаций? Партнёры разбежались? Отвечай! 🤔",
-    "{name}, падение на {pct}% — это не рабочий момент, это провал! Валера ждёт план восстановления! 📋",
-    "Слушай {name}, {diff} активаций потеряли! Валера хочет знать — почему и что делаем! 😤",
+    "{name}! Прошлый месяц было {prev}, при текущем темпе прогноз на этот — {cur}. Минус {diff} активаций ({pct}%)! Валера слушает объяснения! 📉",
+    "Валера смотрит на тебя, {name}. По прогнозу выйдешь на {cur} вместо {prev} в прошлом месяце — минус {diff}. Партнёры разбежались? Отвечай! 🤔",
+    "{name}, по текущему темпу падение на {pct}% к прошлому месяцу — это не рабочий момент, это провал! Валера ждёт план восстановления! 📋",
+    "Слушай {name}, при таком темпе к концу месяца потеряем {diff} активаций к прошлому! Валера хочет знать — почему и что делаем! 😤",
 ]
 
 PRIVL_RANTS = [
@@ -328,14 +328,14 @@ PRAISE_PUBLIC = [
     "💚 <b>{name}</b> показывает как надо!\n{acts} активаций — берите пример! 🏆",
 ]
 
-def build_forecast_callout(d, dp):
-    """Вызов/похвала на основе прогноза"""
+def build_forecast_callout(d, dp, show_transform=True):
+    """Вызов/похвала на основе прогноза. Возвращает (текст, была_ли_трансформация)."""
     forecast = d.get("forecast")
     last_date = d.get("last_date", "")
     total = d.get("total", 0)
     
     if not forecast or not last_date:
-        return None
+        return None, False
     
     day = int(last_date.split("-")[2]) if last_date else 0
     pct = round(total/forecast*100) if forecast else 0
@@ -343,6 +343,7 @@ def build_forecast_callout(d, dp):
     prev_total = dp.get("total", 0) if dp else 0
     
     lines = ["", "━━━━━━━━━━━━━━━━━━━━"]
+    is_bad = False
     
     if prev_total and forecast >= prev_total * 1.1:
         # Прогноз превышает прошлый месяц на 10%+
@@ -358,12 +359,11 @@ def build_forecast_callout(d, dp):
         ]
     elif prev_total and forecast < prev_total * 0.9:
         # Прогноз ниже прошлого месяца на 10%+
+        is_bad = True
         drop = round((prev_total - forecast) / prev_total * 100)
+        if show_transform:
+            lines += [f"{random.choice(TRANSFORM_PHRASES)}", "", f"<i>{random.choice(VALERA_INTRO)}</i>", ""]
         lines += [
-            f"{random.choice(TRANSFORM_PHRASES)}",
-            "",
-            f"<i>{random.choice(VALERA_INTRO)}</i>",
-            "",
             f"📉 <b>ПРОГНОЗ НИЖЕ ПРОШЛОГО МЕСЯЦА</b>",
             "",
             f"При текущем темпе выйдем на <b>{forecast:,} акт.</b>".replace(",", " "),
@@ -374,11 +374,10 @@ def build_forecast_callout(d, dp):
         ]
     elif pct < 40 and day > 15:
         # После середины месяца выполнено меньше 40%
+        is_bad = True
+        if show_transform:
+            lines += [f"{random.choice(TRANSFORM_PHRASES)}", "", f"<i>{random.choice(VALERA_INTRO)}</i>", ""]
         lines += [
-            f"{random.choice(TRANSFORM_PHRASES)}",
-            "",
-            f"<i>{random.choice(VALERA_INTRO)}</i>",
-            "",
             f"⚠️ <b>ТЕМП СЛАБЫЙ</b>",
             "",
             f"По {day}-е числу факт <b>{total:,} акт.</b> — только {pct}% от прогноза.".replace(",", " "),
@@ -396,7 +395,7 @@ def build_forecast_callout(d, dp):
             "Фёдор следит за динамикой 👀",
         ]
     
-    return "\n".join(lines)
+    return "\n".join(lines), is_bad
 
 
 def get_fraud_offenders(tp_list, threshold_pct=15, threshold_abs=10):
@@ -404,17 +403,16 @@ def get_fraud_offenders(tp_list, threshold_pct=15, threshold_abs=10):
             if t.get('fraud', 0) >= threshold_abs and t.get('fraud_pct', 0) >= threshold_pct
             and not any(ex in t["name"] for ex in EXCLUDED_FROM_REPORT)]
 
-def build_fraud_callout(tp_list, threshold_pct=15, threshold_abs=10):
+def build_fraud_callout(tp_list, threshold_pct=15, threshold_abs=10, show_transform=True):
     """Вызов за фрод"""
     offenders = get_fraud_offenders(tp_list, threshold_pct, threshold_abs)
     if not offenders:
         return None
 
-    lines = [
-        "",
-        "━━━━━━━━━━━━━━━━━━━━",
-        f"<b>{random.choice(TRANSFORM_PHRASES)}</b>",
-        "",
+    lines = ["", "━━━━━━━━━━━━━━━━━━━━"]
+    if show_transform:
+        lines += [f"<b>{random.choice(TRANSFORM_PHRASES)}</b>", ""]
+    lines += [
         "🚨 <b>ФРОД — РАЗБОР ПОЛЁТОВ</b>",
         "",
     ]
@@ -432,9 +430,10 @@ def build_fraud_callout(tp_list, threshold_pct=15, threshold_abs=10):
     return "\n".join(lines)
 
 
-def get_drop_offenders(tp_list_cur, tp_list_prev, threshold_pct=20):
+def get_drop_offenders(tp_list_cur, tp_list_prev, last_date=None, days_in_month=None, threshold_pct=20):
     if not tp_list_prev:
         return []
+    day = int(last_date.split("-")[2]) if last_date else None
     prev_map = {t['name']: t['acts'] for t in tp_list_prev}
     offenders = []
     for t in tp_list_cur:
@@ -443,24 +442,30 @@ def get_drop_offenders(tp_list_cur, tp_list_prev, threshold_pct=20):
         prev = prev_map.get(t['name'], 0)
         if prev == 0:
             continue
-        diff = t['acts'] - prev
+        # Сравниваем не "факт на сегодня" с "фактом за весь прошлый месяц" (это всегда
+        # выглядит как обвал в начале месяца), а прогнозируемый темп ТП на весь месяц —
+        # тем же способом, каким считается общий прогноз по компании.
+        if day and days_in_month and day > 0:
+            forecast_acts = round(t['acts'] / day * days_in_month)
+        else:
+            forecast_acts = t['acts']
+        diff = forecast_acts - prev
         drop_pct = round(abs(diff) / max(prev, 1) * 100)
         if diff < 0 and drop_pct >= threshold_pct:
-            offenders.append({**t, 'prev': prev, 'diff': abs(diff), 'drop_pct': drop_pct})
+            offenders.append({**t, 'prev': prev, 'diff': abs(diff), 'drop_pct': drop_pct, 'forecast_acts': forecast_acts})
     return offenders
 
-def build_drop_callout(tp_list_cur, tp_list_prev, threshold_pct=20):
-    """Вызов за падение активаций"""
-    offenders = get_drop_offenders(tp_list_cur, tp_list_prev, threshold_pct)
+def build_drop_callout(tp_list_cur, tp_list_prev, last_date=None, days_in_month=None, threshold_pct=20, show_transform=True):
+    """Вызов за падение активаций (по прогнозу темпа, не по сырому факту)"""
+    offenders = get_drop_offenders(tp_list_cur, tp_list_prev, last_date, days_in_month, threshold_pct)
     if not offenders:
         return None
 
-    lines = [
-        "",
-        "━━━━━━━━━━━━━━━━━━━━",
-        f"<b>{random.choice(TRANSFORM_PHRASES)}</b>",
-        "",
-        "📉 <b>ПАДЕНИЕ АКТИВАЦИЙ — РАЗБОР ПОЛЁТОВ</b>",
+    lines = ["", "━━━━━━━━━━━━━━━━━━━━"]
+    if show_transform:
+        lines += [f"<b>{random.choice(TRANSFORM_PHRASES)}</b>", ""]
+    lines += [
+        "📉 <b>ПАДЕНИЕ АКТИВАЦИЙ (ПО ПРОГНОЗУ) — РАЗБОР ПОЛЁТОВ</b>",
         "",
     ]
     for tp in sorted(offenders, key=lambda x: -x['drop_pct']):
@@ -470,7 +475,7 @@ def build_drop_callout(tp_list_cur, tp_list_prev, threshold_pct=20):
             diff=tp['diff'],
             pct=tp['drop_pct'],
             prev=tp['prev'],
-            cur=tp['acts']
+            cur=tp['forecast_acts']
         )
         lines.append(f"👆 {rant}")
         lines.append("")
@@ -497,17 +502,16 @@ def get_privl_offenders(tp_list, privl, threshold_count=3, threshold_uniq=2):
             offenders.append({**t, 'privl': pm})
     return offenders
 
-def build_privl_callout(tp_list, privl, threshold_count=3, threshold_uniq=2):
+def build_privl_callout(tp_list, privl, threshold_count=3, threshold_uniq=2, show_transform=True):
     """Вызов за мало привлечений"""
     offenders = get_privl_offenders(tp_list, privl, threshold_count, threshold_uniq)
     if not offenders:
         return None
 
-    lines = [
-        "",
-        "━━━━━━━━━━━━━━━━━━━━",
-        f"<b>{random.choice(TRANSFORM_PHRASES)}</b>",
-        "",
+    lines = ["", "━━━━━━━━━━━━━━━━━━━━"]
+    if show_transform:
+        lines += [f"<b>{random.choice(TRANSFORM_PHRASES)}</b>", ""]
+    lines += [
         "👥 <b>МАЛО ПРИВЛЕЧЕНИЙ — РАЗБОР ПОЛЁТОВ</b>",
         "",
     ]
@@ -833,16 +837,37 @@ def send_report():
         tp_prev = months[prev_key].get("tp", []) if prev_key else []
         privl   = db.get("privl", [])
 
-        fraud_msg    = build_fraud_callout(tp_cur)
-        drop_msg     = build_drop_callout(tp_cur, tp_prev)
-        privl_msg    = build_privl_callout(tp_cur, privl)
-        forecast_msg = build_forecast_callout(months[cur_key], months[prev_key] if prev_key else None)
-        has_bad      = any([fraud_msg, drop_msg, privl_msg])
+        last_date     = months[cur_key].get("last_date", "")
+        days_in_month = calendar.monthrange(*[int(x) for x in cur_key.split("-")])[1]
+
+        # Валера трансформируется один раз за весь отчёт — в первом же сообщении,
+        # где реально есть плохие новости. Дальше просто продолжает ругаться без
+        # повторного "Фёдор трансформируется..." в каждом следующем сообщении.
+        forecast_msg, transformed = build_forecast_callout(
+            months[cur_key], months[prev_key] if prev_key else None
+        )
+
+        fraud_msg = build_fraud_callout(tp_cur, show_transform=not transformed)
+        if fraud_msg:
+            transformed = True
+
+        drop_msg = build_drop_callout(
+            tp_cur, tp_prev, last_date=last_date, days_in_month=days_in_month,
+            show_transform=not transformed
+        )
+        if drop_msg:
+            transformed = True
+
+        privl_msg = build_privl_callout(tp_cur, privl, show_transform=not transformed)
+        if privl_msg:
+            transformed = True
+
+        has_bad = any([fraud_msg, drop_msg, privl_msg])
 
         # Ставим нарушителей "на разбор" — чтобы отследить, кто ответил Валере
         offenders_by_reason = {
             "fraud": [t["name"] for t in get_fraud_offenders(tp_cur)],
-            "drop":  [t["name"] for t in get_drop_offenders(tp_cur, tp_prev)],
+            "drop":  [t["name"] for t in get_drop_offenders(tp_cur, tp_prev, last_date=last_date, days_in_month=days_in_month)],
             "privl": [t["name"] for t in get_privl_offenders(tp_cur, privl)],
         }
         if any(offenders_by_reason.values()):

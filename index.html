@@ -175,11 +175,15 @@ tr:last-child td{border-bottom:none}
   </div>
   <div class="month-btns" id="month-btns"></div>
   <div class="upload-area">
-    <label class="upload-btn" for="file-act">＋ Активации</label>
-    <input type="file" id="file-act" accept=".xlsx" onchange="loadFile(this,'act')">
-    <label class="upload-btn" for="file-privl">＋ Привлечение</label>
-    <input type="file" id="file-privl" accept=".xlsx" onchange="loadFile(this,'privl')">
-    <button class="upload-btn" onclick="showBotSettings()" style="background:rgba(0,136,204,0.15);border-color:rgba(0,136,204,0.4);color:#29abe2" title="Настройки Telegram бота">✈️ TG</button>
+    <div id="admin-upload-controls" style="display:none;gap:6px;flex-wrap:wrap;align-items:center">
+      <label class="upload-btn" for="file-act">＋ Активации</label>
+      <input type="file" id="file-act" accept=".xlsx" onchange="loadFile(this,'act')">
+      <label class="upload-btn" for="file-privl">＋ Привлечение</label>
+      <input type="file" id="file-privl" accept=".xlsx" onchange="loadFile(this,'privl')">
+      <button class="upload-btn" onclick="showBotSettings()" style="background:rgba(0,136,204,0.15);border-color:rgba(0,136,204,0.4);color:#29abe2" title="Настройки Telegram бота">✈️ TG</button>
+      <button class="upload-btn" onclick="lockAdmin()" title="Скрыть кнопки загрузки на этом устройстве" style="padding:6px 10px">🔓</button>
+    </div>
+    <button id="admin-unlock-btn" class="upload-btn" onclick="unlockAdmin()" style="padding:6px 10px" title="Загрузка данных доступна только администратору">🔒</button>
   </div>
   <!-- TG Settings Modal -->
   <div id="tg-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:200;align-items:center;justify-content:center">
@@ -787,9 +791,19 @@ function renderTPTab(d,dp,pv){
   bars('tp-bar-top', d.tp.slice(0,10).map(t=>({nm:t.name,val:t.acts})), d.tp[0]?.acts||1,'bg',0.1);
   bars('tp-bar-part', d.tp.slice(0,10).map(t=>({nm:t.name,val:t.partners})), d.tp[0]?.partners||1,'bb',0.1);
   const hasFraud=d.tp.filter(t=>t.fraud>0).sort((a,b)=>b.fraud-a.fraud);
-  if(hasFraud.length) bars('tp-bar-fraud', hasFraud.slice(0,8).map(t=>({nm:t.name,val:t.fraud})), hasFraud[0].fraud,'bfr',0.1);
+  if(hasFraud.length) {
+    bars('tp-bar-fraud', hasFraud.slice(0,8).map(t=>({nm:t.name,val:t.fraud})), hasFraud[0].fraud,'bfr',0.1);
+  } else {
+    const elF=document.getElementById('tp-bar-fraud');
+    if(elF) elF.innerHTML='<div style="padding:16px;color:var(--text3);font-size:13px">Фрода за этот месяц нет 🎉</div>';
+  }
   const hasFraudPct=d.tp.filter(t=>t.acts>=5&&t.fraud_pct>0).sort((a,b)=>b.fraud_pct-a.fraud_pct);
-  if(hasFraudPct.length) bars('tp-bar-fraud-pct', hasFraudPct.slice(0,8).map(t=>({nm:t.name,val:t.fraud_pct})), hasFraudPct[0].fraud_pct,'ba',0.1);
+  if(hasFraudPct.length) {
+    bars('tp-bar-fraud-pct', hasFraudPct.slice(0,8).map(t=>({nm:t.name,val:t.fraud_pct})), hasFraudPct[0].fraud_pct,'ba',0.1);
+  } else {
+    const elP=document.getElementById('tp-bar-fraud-pct');
+    if(elP) elP.innerHTML='<div style="padding:16px;color:var(--text3);font-size:13px">Фрода за этот месяц нет 🎉</div>';
+  }
 }
 
 function buildPRAll(partners, prevPartners){
@@ -1087,6 +1101,39 @@ async function pushPrivlToServer(privlMonths) {
     console.log('Privl pushed to server:', Object.keys(privlMonths||{}));
   } catch(e) { console.error('Privl push error:', e); }
 }
+
+// Кнопки загрузки видны только администратору этого браузера (не настоящая
+// защита — код всё равно виден в исходнике страницы, но защищает от случайных
+// нажатий торговых, которые просто открыли ссылку на дашборд).
+const ADMIN_PIN = '210523';
+
+function applyAdminUI() {
+  const unlocked = localStorage.getItem('as_admin_unlocked') === '1';
+  const controls = document.getElementById('admin-upload-controls');
+  const lockBtn  = document.getElementById('admin-unlock-btn');
+  if (controls) controls.style.display = unlocked ? 'flex' : 'none';
+  if (lockBtn)  lockBtn.style.display  = unlocked ? 'none' : '';
+}
+
+function unlockAdmin() {
+  const pin = prompt('Введите PIN для доступа к загрузке данных:');
+  if (pin === null) return;
+  if (pin.trim() === ADMIN_PIN) {
+    localStorage.setItem('as_admin_unlocked', '1');
+    applyAdminUI();
+    toast('🔓 Доступ к загрузке открыт на этом устройстве');
+  } else {
+    toast('⛔ Неверный PIN');
+  }
+}
+
+function lockAdmin() {
+  localStorage.removeItem('as_admin_unlocked');
+  applyAdminUI();
+  toast('🔒 Кнопки загрузки снова скрыты');
+}
+
+applyAdminUI();
 
 renderMonthBtns();
 render();

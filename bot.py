@@ -656,6 +656,12 @@ def tg_webhook():
         if not msg:
             return jsonify({"ok": True})
 
+        # Реагируем ТОЛЬКО на личные сообщения боту.
+        # Всё, что происходит в группе (в т.ч. ваши собственные сообщения,
+        # обсуждения торговых между собой и т.д.) — полностью игнорируем.
+        if msg.get("chat", {}).get("type") != "private":
+            return jsonify({"ok": True})
+
         from_user = msg.get("from", {})
         text = msg.get("text", "")
         user_name = (from_user.get("first_name", "") + " " + from_user.get("last_name", "")).strip()

@@ -230,6 +230,17 @@ def request_all_checkins():
     logging.info(f"Checkin requests sent to {sent} agents")
     return sent
 
+def tp_name_for_user(user_id, db):
+    """Ищет уже зарегистрированное (через явный выбор кнопкой) имя ТП по
+    user_id — это авторитетный источник истины, в отличие от угадывания
+    по тексту имени в Telegram-профиле (которое может быть на другом
+    языке/в другом формате, чем ФИО в отчётах)."""
+    contacts = db.get("tp_contacts", {})
+    for name, contact in contacts.items():
+        if str(contact.get("id", "")) == str(user_id):
+            return name
+    return None
+
 def handle_checkin(msg, db):
     """Обрабатывает входящее сообщение с геолокацией от агента"""
     from_user = msg.get("from", {})
@@ -239,9 +250,11 @@ def handle_checkin(msg, db):
     date_key  = today_key()
     now_iso   = datetime.now().isoformat()
 
-    # Сопоставляем с именем ТП, если получится — иначе сохраняем как есть
+    # Сначала — уже зарегистрированная явная привязка по user_id (надёжно).
+    # Только если агент почему-то ещё не регистрировался — пробуем угадать
+    # по имени из Telegram-профиля, как раньше.
     all_tp_names = get_all_tp_names(db)
-    matched_key  = match_tp_name(user_name, all_tp_names) or user_name
+    matched_key = tp_name_for_user(user_id, db) or match_tp_name(user_name, all_tp_names) or user_name
 
     point = {"lat": loc["latitude"], "lon": loc["longitude"], "ts": now_iso}
     day_points = db.setdefault("checkins", {}).setdefault(date_key, {})
@@ -515,6 +528,23 @@ VALERA_INTRO = [
     "Валера здесь. И Валера не в восторге. 😠",
 ]
 
+def mention_for(name, contacts):
+    """Возвращает кликабельное упоминание агента в Telegram, если известен
+    его chat_id (после того как он один раз написал боту/прошёл регистрацию).
+    Приоритет: @username (Telegram сам подсвечивает такой текст как ссылку),
+    иначе — упоминание по id (работает, даже если у агента нет юзернейма)."""
+    display = clean_tp_name(name)
+    contact = contacts.get(name)
+    if not contact:
+        return display
+    username = contact.get("username")
+    uid = contact.get("id")
+    if username:
+        return f"{display} (@{username})"
+    if uid:
+        return f'<a href="tg://user?id={uid}">{display}</a>'
+    return display
+
 FRAUD_RANTS = [
     "{name}, это Валера. {fraud} фрод-активаций — {pct}%! Ты вообще партнёров проверяешь?! 🚨",
     "Слушай, {name}! Валера смотрит: {fraud} фродов. Это не случайность — это халтура! Разберись! 😡",
@@ -623,8 +653,9 @@ def get_fraud_offenders(tp_list, threshold_pct=15, threshold_abs=10):
             if t.get('fraud', 0) >= threshold_abs and t.get('fraud_pct', 0) >= threshold_pct
             and not any(ex in t["name"] for ex in EXCLUDED_FROM_REPORT)]
 
-def build_fraud_callout(tp_list, threshold_pct=15, threshold_abs=10, show_transform=True):
+def build_fraud_callout(tp_list, threshold_pct=15, threshold_abs=10, show_transform=True, contacts=None):
     """Вызов за фрод"""
+    contacts = contacts or {}
     offenders = get_fraud_offenders(tp_list, threshold_pct, threshold_abs)
     if not offenders:
         return None
@@ -637,7 +668,7 @@ def build_fraud_callout(tp_list, threshold_pct=15, threshold_abs=10, show_transf
         "",
     ]
     for tp in sorted(offenders, key=lambda x: -x.get('fraud_pct', 0)):
-        name = tp['name'].split('(')[0].strip()
+        name = mention_for(tp['name'], contacts)
         rant = random.choice(FRAUD_RANTS).format(
             name=name,
             fraud=tp['fraud'],
@@ -675,8 +706,9 @@ def get_drop_offenders(tp_list_cur, tp_list_prev, last_date=None, days_in_month=
             offenders.append({**t, 'prev': prev, 'diff': abs(diff), 'drop_pct': drop_pct, 'forecast_acts': forecast_acts})
     return offenders
 
-def build_drop_callout(tp_list_cur, tp_list_prev, last_date=None, days_in_month=None, threshold_pct=20, show_transform=True):
+def build_drop_callout(tp_list_cur, tp_list_prev, last_date=None, days_in_month=None, threshold_pct=20, show_transform=True, contacts=None):
     """Вызов за падение активаций (по прогнозу темпа, не по сырому факту)"""
+    contacts = contacts or {}
     offenders = get_drop_offenders(tp_list_cur, tp_list_prev, last_date, days_in_month, threshold_pct)
     if not offenders:
         return None
@@ -689,7 +721,7 @@ def build_drop_callout(tp_list_cur, tp_list_prev, last_date=None, days_in_month=
         "",
     ]
     for tp in sorted(offenders, key=lambda x: -x['drop_pct']):
-        name = tp['name'].split('(')[0].strip()
+        name = mention_for(tp['name'], contacts)
         rant = random.choice(DROP_RANTS).format(
             name=name,
             diff=tp['diff'],
@@ -722,8 +754,9 @@ def get_privl_offenders(tp_list, privl, threshold_count=3, threshold_uniq=2):
             offenders.append({**t, 'privl': pm})
     return offenders
 
-def build_privl_callout(tp_list, privl, threshold_count=3, threshold_uniq=2, show_transform=True):
+def build_privl_callout(tp_list, privl, threshold_count=3, threshold_uniq=2, show_transform=True, contacts=None):
     """Вызов за мало привлечений"""
+    contacts = contacts or {}
     offenders = get_privl_offenders(tp_list, privl, threshold_count, threshold_uniq)
     if not offenders:
         return None
@@ -736,7 +769,7 @@ def build_privl_callout(tp_list, privl, threshold_count=3, threshold_uniq=2, sho
         "",
     ]
     for tp in offenders[:5]:
-        name = tp['name'].split('(')[0].strip()
+        name = mention_for(tp['name'], contacts)
         pm = tp['privl']
         rant = random.choice(PRIVL_RANTS).format(
             name=name,
@@ -750,9 +783,10 @@ def build_privl_callout(tp_list, privl, threshold_count=3, threshold_uniq=2, sho
     return "\n".join(lines)
 
 
-def build_public_praise(tp_list, has_bad=False, last_date=None, days_in_month=None):
+def build_public_praise(tp_list, has_bad=False, last_date=None, days_in_month=None, contacts=None):
     """Похвала топа — по прогнозируемому темпу на месяц (не по сырому факту на сегодня),
     и в сравнении с остальными ТП. Или Валера в отпуске, если всё хорошо."""
+    contacts = contacts or {}
     candidates = [t for t in tp_list if not any(ex in t["name"] for ex in EXCLUDED_FROM_REPORT)]
     if not candidates:
         return None
@@ -765,7 +799,7 @@ def build_public_praise(tp_list, has_bad=False, last_date=None, days_in_month=No
 
     top = max(candidates, key=forecast_for)
     top_forecast = forecast_for(top)
-    name = top['name'].split('(')[0].strip()
+    name = mention_for(top['name'], contacts)
     praise = random.choice(PRAISE_PUBLIC).format(name=name, acts=top_forecast)
     if not has_bad:
         vacation = random.choice(VALERA_VACATION)
@@ -1119,6 +1153,7 @@ def send_report():
         tp_cur  = months[cur_key].get("tp", [])
         tp_prev = months[prev_key].get("tp", []) if prev_key else []
         privl   = privl_for_month(cur_key)
+        contacts = db.get("tp_contacts", {})
 
         last_date     = months[cur_key].get("last_date", "")
         days_in_month = calendar.monthrange(*[int(x) for x in cur_key.split("-")])[1]
@@ -1130,18 +1165,18 @@ def send_report():
             months[cur_key], months[prev_key] if prev_key else None
         )
 
-        fraud_msg = build_fraud_callout(tp_cur, show_transform=not transformed)
+        fraud_msg = build_fraud_callout(tp_cur, show_transform=not transformed, contacts=contacts)
         if fraud_msg:
             transformed = True
 
         drop_msg = build_drop_callout(
             tp_cur, tp_prev, last_date=last_date, days_in_month=days_in_month,
-            show_transform=not transformed
+            show_transform=not transformed, contacts=contacts
         )
         if drop_msg:
             transformed = True
 
-        privl_msg = build_privl_callout(tp_cur, privl, show_transform=not transformed)
+        privl_msg = build_privl_callout(tp_cur, privl, show_transform=not transformed, contacts=contacts)
         if privl_msg:
             transformed = True
 
@@ -1157,7 +1192,7 @@ def send_report():
             db = load_db()
             register_pending_calls(db, offenders_by_reason)
             save_db(db)
-        praise_msg   = build_public_praise(tp_cur, has_bad=has_bad, last_date=last_date, days_in_month=days_in_month)
+        praise_msg   = build_public_praise(tp_cur, has_bad=has_bad, last_date=last_date, days_in_month=days_in_month, contacts=contacts)
         callouts = [forecast_msg, fraud_msg, drop_msg, privl_msg, praise_msg]
         sent = 0
         for msg in callouts:

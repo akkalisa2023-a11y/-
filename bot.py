@@ -58,6 +58,7 @@ def load_db():
     db.setdefault("answered_calls", [])
     db.setdefault("checkins", {})          # {date: {tp_name: [{lat, lon, ts}, ...]}}
     db.setdefault("checkin_requests", {})  # {date: {tp_name: {"sent_at": iso, "responded": bool}}}
+    db.setdefault("tp_name_codes", {})     # {short_code: full_tp_name} — для callback_data кнопок
     return db
 
 def save_db(db):
@@ -94,6 +95,8 @@ def match_tp_name(query_name, tp_keys):
 
 # ── ЧЕК-ИНЫ ГЕОЛОКАЦИИ ───────────────────────────────────────
 
+import hashlib
+
 def get_all_tp_names(db):
     """Список всех ТП за последний загруженный месяц — используем как
     источник истины 'кто вообще есть в команде', а не только тех, кого
@@ -104,6 +107,11 @@ def get_all_tp_names(db):
     last_key = sorted(months.keys())[-1]
     tp_list = months[last_key].get("tp", [])
     return [t["name"] for t in tp_list]
+
+def tp_name_code(name):
+    """Короткий стабильный код имени ТП — Telegram callback_data ограничен
+    64 байтами, а полные кириллические ФИО с пометками в него не влезают."""
+    return hashlib.md5(name.encode("utf-8")).hexdigest()[:12]
 
 def today_key():
     return datetime.now().strftime("%Y-%m-%d")
@@ -118,7 +126,14 @@ def send_registration_keyboard(chat_id, db):
             chat_id=chat_id
         )
         return
-    buttons = [[{"text": clean_tp_name(name), "callback_data": f"reg:{name}"}] for name in all_names]
+
+    # Сохраняем код -> полное имя, чтобы потом расшифровать выбор
+    code_map = db.setdefault("tp_name_codes", {})
+    for name in all_names:
+        code_map[tp_name_code(name)] = name
+    save_db(db)
+
+    buttons = [[{"text": clean_tp_name(name), "callback_data": f"reg:{tp_name_code(name)}"}] for name in all_names]
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -126,7 +141,10 @@ def send_registration_keyboard(chat_id, db):
         "reply_markup": {"inline_keyboard": buttons}
     }
     try:
-        requests.post(url, json=payload, timeout=10)
+        r = requests.post(url, json=payload, timeout=10)
+        res = r.json()
+        if not res.get("ok"):
+            logging.error(f"send_registration_keyboard: Telegram отклонил запрос: {res}")
     except Exception as e:
         logging.error(f"send_registration_keyboard error: {e}")
 
@@ -148,9 +166,14 @@ def handle_registration_callback(callback_query):
 
     if not data_str.startswith("reg:"):
         return
-    tp_name = data_str[len("reg:"):]
+    code = data_str[len("reg:"):]
 
     db = load_db()
+    tp_name = db.get("tp_name_codes", {}).get(code)
+    if not tp_name:
+        answer_callback_query(cq_id, "Список устарел, напиши /register ещё раз")
+        return
+
     db.setdefault("tp_contacts", {})[tp_name] = {"id": user_id, "username": username}
     save_db(db)
 
@@ -175,7 +198,10 @@ def send_location_keyboard(chat_id):
         }
     }
     try:
-        requests.post(url, json=payload, timeout=10)
+        r = requests.post(url, json=payload, timeout=10)
+        res = r.json()
+        if not res.get("ok"):
+            logging.error(f"send_location_keyboard: Telegram отклонил запрос: {res}")
     except Exception as e:
         logging.error(f"send_location_keyboard error: {e}")
 

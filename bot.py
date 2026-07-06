@@ -21,6 +21,11 @@ EXCLUDED_FROM_REPORT = ["Бузина Яна"]
 # Через сколько часов после разбора Валеры слать напоминание, если ТП не ответил
 REMINDER_HOURS = float(os.environ.get("REMINDER_HOURS", "2"))
 
+# Во сколько часов (по времени сервера) слать запрос геолокации агентам, через запятую
+CHECKIN_HOURS = os.environ.get("CHECKIN_HOURS", "10,13,16,18")
+# Через сколько минут после запроса считать чек-ин пропущенным
+CHECKIN_TIMEOUT_MIN = int(os.environ.get("CHECKIN_TIMEOUT_MIN", "30"))
+
 # Railway Volume — постоянное хранилище, подключено на /data.
 # Если вдруг volume не смонтирован (например, локальный запуск), откатываемся на /tmp.
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
@@ -41,7 +46,8 @@ logging.basicConfig(level=logging.INFO)
 
 def load_db():
     db = {"months": {}, "privl": [], "privl_total": {},
-          "pending_calls": {}, "tp_contacts": {}, "answered_calls": []}
+          "pending_calls": {}, "tp_contacts": {}, "answered_calls": [],
+          "checkins": {}, "checkin_requests": {}}
     if DATA_FILE.exists():
         try:
             db.update(json.loads(DATA_FILE.read_text()))
@@ -50,6 +56,8 @@ def load_db():
     db.setdefault("pending_calls", {})
     db.setdefault("tp_contacts", {})
     db.setdefault("answered_calls", [])
+    db.setdefault("checkins", {})          # {date: {tp_name: [{lat, lon, ts}, ...]}}
+    db.setdefault("checkin_requests", {})  # {date: {tp_name: {"sent_at": iso, "responded": bool}}}
     return db
 
 def save_db(db):
@@ -83,6 +91,179 @@ def match_tp_name(query_name, tp_keys):
         if q_first == k_first or q_first in k_clean.lower() or k_first in query_name.lower():
             return k
     return None
+
+# ── ЧЕК-ИНЫ ГЕОЛОКАЦИИ ───────────────────────────────────────
+
+def get_all_tp_names(db):
+    """Список всех ТП за последний загруженный месяц — используем как
+    источник истины 'кто вообще есть в команде', а не только тех, кого
+    когда-либо вызывали на разбор."""
+    months = db.get("months", {})
+    if not months:
+        return []
+    last_key = sorted(months.keys())[-1]
+    tp_list = months[last_key].get("tp", [])
+    return [t["name"] for t in tp_list]
+
+def today_key():
+    return datetime.now().strftime("%Y-%m-%d")
+
+def send_registration_keyboard(chat_id, db):
+    """Присылает агенту список ТП кнопками — чтобы он один раз явно
+    указал, кто он, вместо ненадёжного автоматического угадывания по имени."""
+    all_names = get_all_tp_names(db)
+    if not all_names:
+        send_message(
+            "Пока не могу показать список — нет загруженных данных по ТП. Напишите руководителю.",
+            chat_id=chat_id
+        )
+        return
+    buttons = [[{"text": clean_tp_name(name), "callback_data": f"reg:{name}"}] for name in all_names]
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": "👋 Привет! Выбери своё имя из списка, чтобы бот знал, кто ты — это нужно для чек-инов по геолокации и разборов Валеры.",
+        "reply_markup": {"inline_keyboard": buttons}
+    }
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        logging.error(f"send_registration_keyboard error: {e}")
+
+def answer_callback_query(callback_query_id, text=""):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
+    try:
+        requests.post(url, json={"callback_query_id": callback_query_id, "text": text}, timeout=10)
+    except Exception as e:
+        logging.error(f"answer_callback_query error: {e}")
+
+def handle_registration_callback(callback_query):
+    """Обрабатывает выбор агентом своего имени из списка — сохраняет
+    железную привязку chat_id ↔ имя ТП, без угадывания."""
+    data_str = callback_query.get("data", "")
+    from_user = callback_query.get("from", {})
+    user_id = from_user.get("id", "")
+    username = from_user.get("username", "")
+    cq_id = callback_query.get("id", "")
+
+    if not data_str.startswith("reg:"):
+        return
+    tp_name = data_str[len("reg:"):]
+
+    db = load_db()
+    db.setdefault("tp_contacts", {})[tp_name] = {"id": user_id, "username": username}
+    save_db(db)
+
+    answer_callback_query(cq_id, "Готово!")
+    send_message(
+        f"✅ Записал: ты — <b>{clean_tp_name(tp_name)}</b>.\n\n"
+        f"Теперь будешь получать запросы на чек-ин и разборы Валеры сюда.",
+        chat_id=user_id
+    )
+    logging.info(f"Agent registered: {tp_name} -> {user_id}")
+
+def send_location_keyboard(chat_id):
+    """Просит агента отправить геолокацию — одна кнопка, без набора текста"""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": "📍 Валера просит отметиться — жми кнопку ниже",
+        "reply_markup": {
+            "keyboard": [[{"text": "📍 Отправить локацию", "request_location": True}]],
+            "resize_keyboard": True,
+            "one_time_keyboard": True
+        }
+    }
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        logging.error(f"send_location_keyboard error: {e}")
+
+def request_all_checkins():
+    """Рассылает запрос геолокации всем ТП, чей chat_id уже известен
+    (агент хотя бы раз писал боту). Помечает отправку, чтобы позже
+    можно было увидеть, кто не ответил."""
+    db = load_db()
+    contacts = db.get("tp_contacts", {})
+    if not contacts:
+        logging.info("request_all_checkins: нет известных контактов ТП")
+        return 0
+
+    date_key = today_key()
+    reqs = db.setdefault("checkin_requests", {}).setdefault(date_key, {})
+    now_iso = datetime.now().isoformat()
+    sent = 0
+    for tp_name, contact in contacts.items():
+        chat_id = contact.get("id")
+        if not chat_id:
+            continue
+        send_location_keyboard(chat_id)
+        reqs[tp_name] = {"sent_at": now_iso, "responded": False}
+        sent += 1
+    save_db(db)
+    logging.info(f"Checkin requests sent to {sent} agents")
+    return sent
+
+def handle_checkin(msg, db):
+    """Обрабатывает входящее сообщение с геолокацией от агента"""
+    from_user = msg.get("from", {})
+    user_id   = from_user.get("id", "")
+    user_name = (from_user.get("first_name", "") + " " + from_user.get("last_name", "")).strip()
+    loc       = msg["location"]
+    date_key  = today_key()
+    now_iso   = datetime.now().isoformat()
+
+    # Сопоставляем с именем ТП, если получится — иначе сохраняем как есть
+    all_tp_names = get_all_tp_names(db)
+    matched_key  = match_tp_name(user_name, all_tp_names) or user_name
+
+    point = {"lat": loc["latitude"], "lon": loc["longitude"], "ts": now_iso}
+    day_points = db.setdefault("checkins", {}).setdefault(date_key, {})
+    day_points.setdefault(matched_key, []).append(point)
+
+    # Закрываем ожидание чек-ина на сегодня, если оно было
+    reqs = db.get("checkin_requests", {}).get(date_key, {})
+    if matched_key in reqs:
+        reqs[matched_key]["responded"] = True
+
+    save_db(db)
+    send_message("📍 Локация принята, спасибо!", chat_id=user_id)
+    logging.info(f"Checkin saved for {matched_key}")
+
+def check_missed_checkins():
+    """Раз в N минут смотрит, кто не ответил на сегодняшний запрос
+    геолокации дольше CHECKIN_TIMEOUT_MIN, и один раз уведомляет владельца."""
+    try:
+        db = load_db()
+        date_key = today_key()
+        reqs = db.get("checkin_requests", {}).get(date_key, {})
+        if not reqs:
+            return
+        now = datetime.now()
+        changed = False
+        missed = []
+        for tp_name, info in reqs.items():
+            if info.get("responded") or info.get("missed_notified"):
+                continue
+            try:
+                sent_at = datetime.fromisoformat(info["sent_at"])
+            except Exception:
+                continue
+            if now - sent_at < timedelta(minutes=CHECKIN_TIMEOUT_MIN):
+                continue
+            missed.append(clean_tp_name(tp_name))
+            info["missed_notified"] = True
+            changed = True
+        if missed:
+            send_message(
+                "⏰ <b>Не отметились по геолокации:</b>\n\n" +
+                "\n".join(f"👤 {name}" for name in missed),
+                chat_id=OWNER_ID
+            )
+        if changed:
+            save_db(db)
+    except Exception as e:
+        logging.error(f"check_missed_checkins error: {e}")
 
 # ── ВСЁ ЧТО БЫЛО В ТВОЁМ ФАЙЛЕ ──────────────────────────────
 
@@ -679,6 +860,13 @@ def tg_webhook():
     """Принимает сообщения от пользователей боту и пересылает владельцу"""
     try:
         data = request.json
+
+        # Нажатие на inline-кнопку выбора имени при регистрации
+        callback_query = data.get("callback_query")
+        if callback_query:
+            handle_registration_callback(callback_query)
+            return jsonify({"ok": True})
+
         msg = data.get("message", {})
         if not msg:
             return jsonify({"ok": True})
@@ -695,24 +883,42 @@ def tg_webhook():
         username = from_user.get("username", "")
         user_id = from_user.get("id", "")
 
+        # Геолокация (чек-ин) — обрабатываем отдельно и сразу выходим
+        if "location" in msg:
+            db = load_db()
+            handle_checkin(msg, db)
+            return jsonify({"ok": True})
+
         if not text or text.startswith("/"):
-            # Отвечаем на /start
+            # Отвечаем на /start — сразу просим явно выбрать своё имя из списка,
+            # вместо ненадёжного угадывания по first name (тёзки, разные написания)
             if text == "/start":
+                db = load_db()
                 send_message(
-                    f"👋 Привет! Это бот АС — партнёрский дашборд.\n\nЕсли Валера вызвал тебя на разбор — пиши объяснение прямо сюда, я передам руководителю.",
+                    "👋 Привет! Это бот АС — партнёрский дашборд.\n\nЕсли Валера вызвал тебя на разбор — пиши объяснение прямо сюда, я передам руководителю.",
                     chat_id=user_id
                 )
+                send_registration_keyboard(user_id, db)
+            elif text == "/whoami" or text == "/register":
+                # На случай, если агент сменил телефон/аккаунт и надо перерегистрироваться
+                db = load_db()
+                send_registration_keyboard(user_id, db)
             return jsonify({"ok": True})
 
         db = load_db()
 
-        # Запоминаем контакт ТП по имени — на будущее (напоминания, разбор)
+        # Запоминаем контакт ТП по имени — на будущее (напоминания, разбор, чек-ины).
+        # Сначала пробуем сопоставить с теми, кого ждём на разборе (точнее совпадение
+        # по контексту), если не вышло — со всем списком ТП за последний месяц,
+        # чтобы контакт агента был известен даже без разбора.
         pending = db.get("pending_calls", {})
         matched_key = match_tp_name(user_name, pending.keys()) if pending else None
+        if not matched_key:
+            matched_key = match_tp_name(user_name, get_all_tp_names(db))
         if matched_key:
             db.setdefault("tp_contacts", {})[matched_key] = {"id": user_id, "username": username}
 
-        if matched_key:
+        if matched_key and matched_key in pending:
             # Это ответ на разбор Валеры — закрываем вопрос по этому ТП
             info = pending.pop(matched_key)
             db.setdefault("answered_calls", []).append({
@@ -817,6 +1023,24 @@ def upload_privl():
         db["privl_total"] = payload.get("privl_total", {})
     save_db(db)
     return jsonify({"status": "ok", "months": list(privl_months.keys()) or ["legacy"]})
+
+# Ручной запуск рассылки запроса геолокации (кнопка на дашборде, помимо расписания)
+@app.route("/checkin/request", methods=["POST"])
+def checkin_request_endpoint():
+    if not check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    sent = request_all_checkins()
+    return jsonify({"status": "ok", "sent": sent})
+
+# Дашборд забирает точки чек-инов за дату (YYYY-MM-DD)
+@app.route("/checkins/<date>", methods=["GET"])
+def get_checkins(date):
+    if not check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    db = load_db()
+    points  = db.get("checkins", {}).get(date, {})
+    requests_ = db.get("checkin_requests", {}).get(date, {})
+    return jsonify({"date": date, "checkins": points, "requests": requests_})
 
 # Триггер отчёта в TG (вызывается дашбордом после загрузки)
 @app.route("/send-report", methods=["POST"])
@@ -970,6 +1194,15 @@ setup_webhook()
 
 _scheduler = BackgroundScheduler()
 _scheduler.add_job(check_reminders, "interval", minutes=15, id="valera_reminders")
+
+# Автоматическая рассылка запроса геолокации в заданные часы (CHECKIN_HOURS)
+_scheduler.add_job(
+    request_all_checkins, "cron",
+    hour=CHECKIN_HOURS, minute=0, id="checkin_requests"
+)
+# Проверка пропущенных чек-инов
+_scheduler.add_job(check_missed_checkins, "interval", minutes=10, id="checkin_missed")
+
 _scheduler.start()
 
 if __name__ == "__main__":

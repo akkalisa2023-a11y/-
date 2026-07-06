@@ -6,6 +6,8 @@
 <title>АС — Партнёрский дашборд</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 :root{
@@ -160,6 +162,20 @@ tr:last-child td{border-bottom:none}
 .brow:nth-child(1){animation-delay:.04s}.brow:nth-child(2){animation-delay:.08s}.brow:nth-child(3){animation-delay:.12s}.brow:nth-child(4){animation-delay:.16s}.brow:nth-child(5){animation-delay:.2s}.brow:nth-child(6){animation-delay:.24s}.brow:nth-child(7){animation-delay:.28s}.brow:nth-child(8){animation-delay:.32s}
 
 .cw{position:relative;width:100%}
+
+/* MAP */
+.map-wrap{border-radius:var(--radius);overflow:hidden;border:1px solid var(--border)}
+#map-canvas{height:480px;width:100%;background:var(--bg3)}
+.map-date-row{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+.map-date-input{padding:6px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:12px;font-family:inherit}
+.checkin-legend{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+.ci-chip{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:600}
+.ci-ok{background:var(--mint-dim);color:var(--mint);border:1px solid var(--border2)}
+.ci-missed{background:var(--red-dim);color:var(--red);border:1px solid rgba(232,64,64,0.3)}
+.ci-dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+.leaflet-popup-content-wrapper{background:var(--card);color:var(--text);border-radius:var(--radius-sm)}
+.leaflet-popup-tip{background:var(--card)}
+.leaflet-popup-content{font-family:'Inter',sans-serif;font-size:12px}
 </style>
 </head>
 <body>
@@ -181,6 +197,7 @@ tr:last-child td{border-bottom:none}
       <label class="upload-btn" for="file-privl">＋ Привлечение</label>
       <input type="file" id="file-privl" accept=".xlsx" onchange="loadFile(this,'privl')">
       <button class="upload-btn" onclick="showBotSettings()" style="background:rgba(0,136,204,0.15);border-color:rgba(0,136,204,0.4);color:#29abe2" title="Настройки Telegram бота">✈️ TG</button>
+      <button class="upload-btn" onclick="requestCheckinsNow()" style="background:rgba(74,210,134,0.1)" title="Запросить геолокацию у всех агентов прямо сейчас">📍 Запросить локации</button>
       <button class="upload-btn" onclick="lockAdmin()" title="Скрыть кнопки загрузки на этом устройстве" style="padding:6px 10px">🔓</button>
     </div>
     <button id="admin-unlock-btn" class="upload-btn" onclick="unlockAdmin()" style="padding:6px 10px" title="Загрузка данных доступна только администратору">🔒</button>
@@ -214,6 +231,7 @@ tr:last-child td{border-bottom:none}
   <div class="tab" onclick="sw('pr',this)">Партнёры</div>
   <div class="tab" onclick="sw('at',this)">Привлечение</div>
   <div class="tab" onclick="sw('ef',this)">Эффективность</div>
+  <div class="tab" onclick="sw('mp',this)">Карта</div>
 </div>
 
 <div class="content">
@@ -320,6 +338,22 @@ tr:last-child td{border-bottom:none}
     </div>
   </div>
   <div id="eff-list"></div>
+</div>
+
+<!-- КАРТА (ЧЕК-ИНЫ ГЕОЛОКАЦИИ) -->
+<div id="tmp" style="display:none">
+  <div class="map-date-row">
+    <input type="date" id="map-date" class="map-date-input" onchange="loadCheckinsForDate()">
+    <button class="upload-btn" onclick="loadCheckinsForDate()" style="padding:6px 12px">🔄 Обновить</button>
+    <span id="map-loading" style="font-size:11px;color:var(--text3)"></span>
+  </div>
+  <div class="card full" style="padding:0">
+    <div class="map-wrap"><div id="map-canvas"></div></div>
+  </div>
+  <div class="card full" style="margin-top:12px">
+    <div class="ct"><span class="dot"></span>Кто отметился / не отметился сегодня</div>
+    <div class="checkin-legend" id="checkin-legend"></div>
+  </div>
 </div>
 
 </div>
@@ -976,15 +1010,126 @@ function renderEfficiency(){
 }
 
 function sw(id,el){
-  ['sv','tp','pr','at','ef'].forEach(t=>document.getElementById('t'+t).style.display=t===id?'':'none');
+  ['sv','tp','pr','at','ef','mp'].forEach(t=>document.getElementById('t'+t).style.display=t===id?'':'none');
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
   el.classList.add('on');
-  // На Привлечение — прячем верхние кнопки, там свои
-  document.getElementById('month-btns').style.display = id==='at' ? 'none' : 'flex';
+  // На Привлечение и Карте — прячем верхние кнопки месяцев, там свои элементы
+  document.getElementById('month-btns').style.display = (id==='at'||id==='mp') ? 'none' : 'flex';
   if(id==='at'){renderPrivlMonthBtns();renderPrivl();}
   if(id==='ef')renderEfficiency();
+  if(id==='mp'){initMapIfNeeded();loadCheckinsForDate();}
 }
 
+
+// ── КАРТА / ЧЕК-ИНЫ ГЕОЛОКАЦИИ ─────────────────────────────────
+
+let _map = null;
+let _mapLayers = [];
+const MAP_COLORS = ['#4ad286','#2980b9','#f5a623','#e84040','#9b59b6','#1abc9c','#e67e22','#3498db'];
+
+function dispName(name){ return (name||'').split('(')[0].trim(); }
+
+function initMapIfNeeded(){
+  if (_map) return;
+  _map = L.map('map-canvas').setView([55.751244, 37.618423], 10); // Москва по умолчанию, дальше fitBounds
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap',
+    maxZoom: 19
+  }).addTo(_map);
+}
+
+function loadCheckinsForDate(){
+  const input = document.getElementById('map-date');
+  if (!input.value) {
+    const today = new Date();
+    input.value = today.toISOString().slice(0,10);
+  }
+  fetchCheckins(input.value);
+}
+
+async function fetchCheckins(date){
+  if (!BOT_URL) { toast('⚠️ Бот не настроен'); return; }
+  const loadingEl = document.getElementById('map-loading');
+  loadingEl.textContent = 'Загрузка...';
+  const secret = localStorage.getItem('as_api_secret') || 'as_secret_2026';
+  try {
+    const r = await fetch(`${BOT_URL}/checkins/${date}`, { headers: {'X-API-Secret': secret} });
+    const data = await r.json();
+    renderMapData(data);
+  } catch(e) {
+    toast('❌ Не удалось загрузить чек-ины: ' + e.message);
+  } finally {
+    loadingEl.textContent = '';
+  }
+}
+
+function renderMapData(data){
+  initMapIfNeeded();
+  // Чистим прошлые маркеры/линии
+  _mapLayers.forEach(l => _map.removeLayer(l));
+  _mapLayers = [];
+
+  const checkins = data.checkins || {};
+  const reqs     = data.requests || {};
+  const allBounds = [];
+  const names = Object.keys(checkins);
+
+  names.forEach((name, i) => {
+    const points = (checkins[name] || []).slice().sort((a,b) => a.ts.localeCompare(b.ts));
+    if (!points.length) return;
+    const color = MAP_COLORS[i % MAP_COLORS.length];
+    const latlngs = points.map(p => [p.lat, p.lon]);
+    latlngs.forEach(ll => allBounds.push(ll));
+
+    if (latlngs.length > 1) {
+      const line = L.polyline(latlngs, {color, weight: 2, opacity: 0.6}).addTo(_map);
+      _mapLayers.push(line);
+    }
+    points.forEach((p, idx) => {
+      const time = new Date(p.ts).toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'});
+      const marker = L.circleMarker([p.lat, p.lon], {
+        radius: 7, color, fillColor: color, fillOpacity: 0.85, weight: 2
+      }).addTo(_map);
+      marker.bindPopup(`<b>${dispName(name)}</b><br>${time}${idx===points.length-1?' (последняя)':''}`);
+      _mapLayers.push(marker);
+    });
+  });
+
+  if (allBounds.length) {
+    _map.fitBounds(allBounds, {padding: [30,30]});
+  }
+
+  // Легенда: кто отметился / кто пропустил
+  const legendEl = document.getElementById('checkin-legend');
+  const allNames = new Set([...Object.keys(checkins), ...Object.keys(reqs)]);
+  if (!allNames.size) {
+    legendEl.innerHTML = '<span style="font-size:12px;color:var(--text3)">Нет данных за эту дату</span>';
+    return;
+  }
+  legendEl.innerHTML = [...allNames].map(name => {
+    const hasCheckin = (checkins[name]||[]).length > 0;
+    const reqInfo = reqs[name];
+    const missed = reqInfo && !reqInfo.responded && !hasCheckin;
+    const cls = missed ? 'ci-missed' : 'ci-ok';
+    const icon = missed ? '✕' : '✓';
+    return `<span class="ci-chip ${cls}"><span class="ci-dot"></span>${icon} ${dispName(name)}</span>`;
+  }).join('');
+}
+
+async function requestCheckinsNow(){
+  if (!BOT_URL) { toast('⚠️ Бот не настроен'); return; }
+  const secret = localStorage.getItem('as_api_secret') || 'as_secret_2026';
+  try {
+    const r = await fetch(`${BOT_URL}/checkin/request`, {
+      method: 'POST', headers: {'X-API-Secret': secret}
+    });
+    const res = await r.json();
+    if (res.status === 'ok') toast(`📍 Запрос геолокации отправлен ${res.sent} агентам`);
+    else toast('❌ Ошибка: ' + (res.message || 'неизвестно'));
+  } catch(e) {
+    toast('❌ Не могу достучаться до бота: ' + e.message);
+  }
+}
 
 // ── TELEGRAM FUNCTIONS ────────────────────────────────────────
 

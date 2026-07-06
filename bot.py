@@ -135,12 +135,25 @@ def build_insights(data):
     prev = data.get("prev")
     insights = []
     if prev:
-        diff = d.get("total", 0) - prev.get("total", 0)
-        diff_pct = round(diff / prev.get("total", 1) * 100)
-        if diff < 0:
-            insights.append(f"📉 Активации упали на {abs(diff)} ({abs(diff_pct)}%) — нужен разбор причин")
-        elif diff > 0:
-            insights.append(f"📈 Активации выросли на {diff} (+{diff_pct}%) — команда прибавила!")
+        forecast = d.get("forecast")
+        prev_total = prev.get("total", 0)
+        if forecast and prev_total:
+            # Сравниваем прогноз на месяц с прошлым месяцем — не сырой факт
+            # на сегодня (что всегда выглядит как обвал в начале месяца).
+            diff = forecast - prev_total
+            diff_pct = round(diff / prev_total * 100)
+            if diff < 0:
+                insights.append(f"📉 По прогнозу активации упадут на {abs(diff)} ({abs(diff_pct)}%) к прошлому месяцу — нужен разбор причин")
+            elif diff > 0:
+                insights.append(f"📈 По прогнозу активации вырастут на {diff} (+{diff_pct}%) к прошлому месяцу — команда прибавляет!")
+        elif prev_total:
+            # Нет данных для прогноза (нет last_date) — сравниваем как есть, редкий случай
+            diff = d.get("total", 0) - prev_total
+            diff_pct = round(diff / prev_total * 100)
+            if diff < 0:
+                insights.append(f"📉 Активации упали на {abs(diff)} ({abs(diff_pct)}%) — нужен разбор причин")
+            elif diff > 0:
+                insights.append(f"📈 Активации выросли на {diff} (+{diff_pct}%) — команда прибавила!")
         fraud_now  = d.get("fraud_pct", 0)
         fraud_prev = prev.get("fraud_pct", 0)
         if fraud_now > fraud_prev + 5:

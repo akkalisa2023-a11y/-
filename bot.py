@@ -1,5 +1,15 @@
 import os, json, logging, random, calendar
 from zoneinfo import ZoneInfo
+
+# Railway крутится в UTC, а вся команда — по Москве. Чтобы метки времени
+# в базе (чек-ины, разборы, отчёты) не съезжали на 3 часа, везде вместо
+# datetime.now() используем эту функцию. Возвращает наивный datetime
+# (без tzinfo) — специально, чтобы не ломать сравнения со старыми
+# метками, которые уже сохранены в базе без часового пояса.
+MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+def now_msk():
+    from datetime import datetime as _dt
+    return _dt.now(MOSCOW_TZ).replace(tzinfo=None)
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import requests
@@ -59,7 +69,7 @@ def load_db():
     db.setdefault("answered_calls", [])
     db.setdefault("checkins", {})          # {date: {tp_name: [{lat, lon, ts}, ...]}}
     db.setdefault("checkin_requests", {})  # {date: {tp_name: {"sent_at": iso, "responded": bool}}}
-    db.setdefault("awaiting_photo", {})    # {user_id: {"date":, "name":, "idx":}} — ждём фото после локации
+    db.setdefault("awaiting_photo", {})    # {user_id: [{"date":, "name":, "idx":}, ...]} — очередь ждущих фото
     db.setdefault("territories", {})       # {tp_name: [city1, city2, ...]} — закреплённые города
     db.setdefault("tp_name_codes", {})     # {short_code: full_tp_name} — для callback_data кнопок
     return db
@@ -117,7 +127,7 @@ def tp_name_code(name):
     return hashlib.md5(name.encode("utf-8")).hexdigest()[:12]
 
 def today_key():
-    return datetime.now().strftime("%Y-%m-%d")
+    return now_msk().strftime("%Y-%m-%d")
 
 def send_registration_keyboard(chat_id, db):
     """Присылает агенту список ТП кнопками — чтобы он один раз явно
@@ -220,7 +230,7 @@ def request_all_checkins():
 
     date_key = today_key()
     reqs = db.setdefault("checkin_requests", {}).setdefault(date_key, {})
-    now_iso = datetime.now().isoformat()
+    now_iso = now_msk().isoformat()
     sent = 0
     for tp_name, contact in contacts.items():
         chat_id = contact.get("id")
@@ -306,7 +316,7 @@ def handle_checkin(msg, db):
     user_name = (from_user.get("first_name", "") + " " + from_user.get("last_name", "")).strip()
     loc       = msg["location"]
     date_key  = today_key()
-    now_iso   = datetime.now().isoformat()
+    now_iso   = now_msk().isoformat()
 
     # Сначала — уже зарегистрированная явная привязка по user_id (надёжно).
     # Только если агент почему-то ещё не регистрировался — пробуем угадать
@@ -325,10 +335,12 @@ def handle_checkin(msg, db):
     day_points.setdefault(matched_key, []).append(point)
     point_idx = len(day_points[matched_key]) - 1
 
-    # Ждём фото следующим сообщением — чек-ин пока не считается отвеченным
-    db.setdefault("awaiting_photo", {})[str(user_id)] = {
+    # Ждём фото следующим сообщением — чек-ин пока не считается отвеченным.
+    # Очередь (список), а не одна запись — если агент отметится второй раз
+    # до того, как пришлёт фото за первый, обе отметки не потеряются.
+    db.setdefault("awaiting_photo", {}).setdefault(str(user_id), []).append({
         "date": date_key, "name": matched_key, "idx": point_idx
-    }
+    })
 
     save_db(db)
     send_message(
@@ -338,13 +350,15 @@ def handle_checkin(msg, db):
     logging.info(f"Checkin location saved for {matched_key}, ждём фото")
 
 def handle_checkin_photo(msg, db):
-    """Обрабатывает фото, присланное следом за геолокацией — довершает чек-ин."""
+    """Обрабатывает фото, присланное следом за геолокацией — довершает чек-ин.
+    Если у агента накопилось несколько ожидающих фото (отметился не раз
+    подряд) — фото уходит на самую раннюю из них (FIFO), по порядку."""
     from_user = msg.get("from", {})
     user_id = str(from_user.get("id", ""))
     awaiting = db.get("awaiting_photo", {})
-    pending_info = awaiting.get(user_id)
+    queue = awaiting.get(user_id) or []
 
-    if not pending_info:
+    if not queue:
         send_message(
             "📷 Фото получил, но сейчас не жду его от тебя — сначала нажми кнопку локации, если это был чек-ин.",
             chat_id=int(user_id) if user_id.isdigit() else user_id
@@ -355,6 +369,10 @@ def handle_checkin_photo(msg, db):
     if not photo_sizes:
         return
     file_id = photo_sizes[-1]["file_id"]  # последний элемент — самое большое разрешение
+
+    pending_info = queue.pop(0)  # самая ранняя ожидающая отметка
+    if not queue:
+        del awaiting[user_id]
 
     date_key = pending_info["date"]
     name     = pending_info["name"]
@@ -371,7 +389,6 @@ def handle_checkin_photo(msg, db):
     if name in reqs:
         reqs[name]["responded"] = True
 
-    del awaiting[user_id]
     save_db(db)
     send_message("✅ Фото принято, чек-ин засчитан!", chat_id=int(user_id) if user_id.isdigit() else user_id)
     logging.info(f"Checkin photo saved for {name}")
@@ -386,12 +403,17 @@ def check_missed_checkins():
         reqs = db.get("checkin_requests", {}).get(date_key, {})
         if not reqs:
             return
-        now = datetime.now()
+        now = now_msk()
         changed = False
         missed_none  = []  # вообще не ответили
         missed_photo = []  # локация есть, фото нет
         awaiting = db.get("awaiting_photo", {})
-        names_awaiting_photo = {v["name"] for v in awaiting.values() if v.get("date") == date_key}
+        names_awaiting_photo = {
+            item["name"]
+            for queue in awaiting.values()
+            for item in queue
+            if item.get("date") == date_key
+        }
 
         for tp_name, info in reqs.items():
             if info.get("responded") or info.get("missed_notified"):
@@ -512,7 +534,7 @@ def build_report(data, month_label):
     d       = data["current"]
     prev    = data.get("prev")
     tp_list = d.get("tp", [])
-    now     = datetime.now().strftime("%d.%m.%Y %H:%M")
+    now     = now_msk().strftime("%d.%m.%Y %H:%M")
 
     lines = [
         f"<b>📊 АС — Отчёт за {month_label}</b>",
@@ -955,7 +977,7 @@ def register_pending_calls(db, offenders_by_reason):
     """offenders_by_reason: {reason_code: [tp_name, ...]}
     Добавляет новых нарушителей в db['pending_calls'], не трогая тех,
     кто уже там ждёт ответа (чтобы не сбрасывать таймер напоминания)."""
-    now_iso = datetime.now().isoformat()
+    now_iso = now_msk().isoformat()
     pending = db.setdefault("pending_calls", {})
     for reason, names in offenders_by_reason.items():
         for name in names:
@@ -991,7 +1013,7 @@ def check_reminders():
         pending = db.get("pending_calls", {})
         if not pending:
             return
-        now = datetime.now()
+        now = now_msk()
         changed = False
         for name, info in pending.items():
             if info.get("reminded"):
@@ -1105,15 +1127,27 @@ def tg_webhook():
 
         if matched_key and matched_key in pending:
             # Это ответ на разбор Валеры — закрываем вопрос по этому ТП.
-            # Не пересылаем владельцу поштучно — только единый свод,
-            # когда ответят все, кого вызывали (см. maybe_send_summary ниже).
             info = pending.pop(matched_key)
-            db.setdefault("answered_calls", []).append({
-                "name": matched_key,
-                "text": text,
-                "answered_at": datetime.now().isoformat(),
-                "reasons": info.get("reasons", []),
-            })
+            reasons = info.get("reasons", [])
+
+            if "territory" in reasons:
+                # Территория — особый случай: шлём владельцу сразу же,
+                # отдельно от общего свода (не копим в answered_calls,
+                # чтобы не задваивалось при финальной сводке).
+                send_message(
+                    f"📍 <b>Ответ по территории:</b>\n\n"
+                    f"👤 {clean_tp_name(matched_key)}\n\n"
+                    f"💬 {text}",
+                    chat_id=OWNER_ID
+                )
+            else:
+                db.setdefault("answered_calls", []).append({
+                    "name": matched_key,
+                    "text": text,
+                    "answered_at": now_msk().isoformat(),
+                    "reasons": reasons,
+                })
+
             send_message("✅ Спасибо! Передал руководителю.", chat_id=user_id)
             maybe_send_summary(db)
             save_db(db)
@@ -1166,7 +1200,7 @@ def upload_activations():
         return jsonify({"error": "month and data required"}), 400
 
     db      = load_db()
-    today   = datetime.now()
+    today   = now_msk()
     cur_m   = f"{today.year}-{str(today.month).zfill(2)}"
 
     if month in db["months"] and month != cur_m:
@@ -1415,7 +1449,6 @@ setup_webhook()
 
 # Railway по умолчанию крутится в UTC — без явного часового пояса
 # CHECKIN_HOURS считались бы по серверному времени, а не по Москве
-MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 _scheduler = BackgroundScheduler(timezone=MOSCOW_TZ)
 _scheduler.add_job(check_reminders, "interval", minutes=15, id="valera_reminders")
 

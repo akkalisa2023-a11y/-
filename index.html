@@ -186,11 +186,19 @@ tr:last-child td{border-bottom:none}
 .photo-card img{width:100%;height:110px;object-fit:cover;display:block}
 .photo-card .pc-label{padding:6px 8px;font-size:11px;color:var(--text2)}
 .photo-card .pc-label b{color:var(--text);display:block;font-size:11.5px}
-.ci-chip{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:600}
-.ci-ok{background:var(--mint-dim);color:var(--mint);border:1px solid var(--border2)}
-.ci-missed{background:var(--red-dim);color:var(--red);border:1px solid rgba(232,64,64,0.3)}
-.ci-dot{width:6px;height:6px;border-radius:50%;background:currentColor}
-.ymaps-2-1-79-balloon,.ymaps-2-1-79-islets_balloon_layout{background:var(--card) !important;color:var(--text) !important}
+.ci-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px 4px 8px;border-radius:20px;font-size:11px;font-weight:600;background:var(--bg3);color:var(--text2);border:1px solid var(--border)}
+.ci-chip.ci-missed{border-color:rgba(232,64,64,0.5);color:var(--red)}
+.ci-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;box-shadow:0 0 4px currentColor}
+/* Стили балуна Яндекс.Карт — по подстроке класса, не по точной версии API,
+   чтобы не ломалось при автообновлении версии Яндексом */
+div[class*="balloon__content"],
+div[class*="balloon__content-body"],
+div[class*="islets_balloon_layout__content"]{background:var(--card) !important;color:var(--text) !important}
+div[class*="balloon__layout"],
+div[class*="balloon__tail"]{background:var(--card) !important}
+div[class*="balloon__tail"]::after{background:var(--card) !important;box-shadow:none !important}
+div[class*="balloon"] *{color:var(--text) !important}
+div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
 </style>
 </head>
 <body>
@@ -213,6 +221,7 @@ tr:last-child td{border-bottom:none}
       <input type="file" id="file-privl" accept=".xlsx" onchange="loadFile(this,'privl')">
       <button class="upload-btn" onclick="showBotSettings()" style="background:rgba(0,136,204,0.15);border-color:rgba(0,136,204,0.4);color:#29abe2" title="Настройки Telegram бота">✈️ TG</button>
       <button class="upload-btn" onclick="requestCheckinsNow()" style="background:rgba(74,210,134,0.1)" title="Запросить геолокацию у всех агентов прямо сейчас">📍 Запросить локации</button>
+      <button class="upload-btn" onclick="openTerritoriesModal()" style="background:rgba(154,89,224,0.12);border-color:rgba(154,89,224,0.4);color:#b98cf0" title="Закрепить города за торговыми">🗺️ Территории</button>
       <button class="upload-btn" onclick="lockAdmin()" title="Скрыть кнопки загрузки на этом устройстве" style="padding:6px 10px">🔓</button>
     </div>
     <button id="admin-unlock-btn" class="upload-btn" onclick="unlockAdmin()" style="padding:6px 10px" title="Загрузка данных доступна только администратору">🔒</button>
@@ -236,6 +245,20 @@ tr:last-child td{border-bottom:none}
         <button onclick="document.getElementById('tg-modal').style.display='none'"
           style="padding:8px 12px;background:transparent;color:var(--text3);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-family:inherit">✕</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<div id="territories-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:200;align-items:center;justify-content:center">
+  <div style="background:var(--card);border:1px solid var(--border2);border-radius:var(--radius);padding:24px;width:460px;max-width:90vw;max-height:80vh;display:flex;flex-direction:column">
+    <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:6px">🗺️ Территории торговых</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:14px">Впишите город(а) через запятую для каждого — если торговый отметится за пределами своих городов, Валера спросит объяснение. Оставьте пустым, если территория не ограничена.</div>
+    <div id="territories-list" style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:8px;margin-bottom:12px"></div>
+    <div style="display:flex;gap:8px">
+      <button onclick="saveTerritories()"
+        style="flex:1;padding:8px;background:var(--mint);color:#000;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600;font-family:inherit">Сохранить</button>
+      <button onclick="document.getElementById('territories-modal').style.display='none'"
+        style="padding:8px 12px;background:transparent;color:var(--text3);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-family:inherit">✕</button>
     </div>
   </div>
 </div>
@@ -1260,10 +1283,15 @@ function applyMapFilter(){
       const photoHtml = p._photoUrl
         ? `<br><img src="${p._photoUrl}" style="max-width:200px;border-radius:8px;margin-top:6px;display:block">`
         : '<br><i style="opacity:.6">без фото</i>';
+      const cityHtml = p.resolved_city ? `<br>📍 ${p.resolved_city}` : '';
+      const warnHtml = p.outside_territory
+        ? `<br><b style="color:#e84040">⚠️ Вне закреплённой территории</b>` : '';
       const placemark = new ymaps.Placemark([p.lat, p.lon], {
         balloonContentHeader: dispName(name),
-        balloonContentBody: `${time}${idx===points.length-1?' (последняя)':''}${photoHtml}`
-      }, {
+        balloonContentBody: `${time}${idx===points.length-1?' (последняя)':''}${cityHtml}${warnHtml}${photoHtml}`
+      }, p.outside_territory ? {
+        preset: 'islands#redCircleIcon'  // точка вне территории — всегда красная, независимо от цвета агента
+      } : {
         preset: 'islands#circleIcon',
         iconColor: color
       });
@@ -1285,17 +1313,21 @@ function applyMapFilter(){
     legendEl.innerHTML = '<span style="font-size:12px;color:var(--text3)">Нет данных за эту дату</span>';
   } else {
     const resetChip = _selectedAgent
-      ? `<span class="ci-chip ci-ok" style="cursor:pointer;background:var(--bg3)" onclick="showAllAgents()">↺ Показать всех</span>`
+      ? `<span class="ci-chip" style="cursor:pointer" onclick="showAllAgents()">↺ Показать всех</span>`
       : '';
     legendEl.innerHTML = resetChip + [...allNames].map(name => {
       const hasCheckin = (checkins[name]||[]).length > 0;
       const reqInfo = reqs[name];
       const missed = reqInfo && !reqInfo.responded && !hasCheckin;
-      const cls = missed ? 'ci-missed' : 'ci-ok';
+      const hasViolation = (checkins[name]||[]).some(p => p.outside_territory);
+      const colorIdx = allNamesFull.indexOf(name);
+      const dotColor = colorIdx >= 0 ? MAP_COLORS[colorIdx % MAP_COLORS.length] : 'var(--text3)';
+      const cls = missed ? 'ci-missed' : '';
       const icon = missed ? '✕' : '✓';
+      const warnBadge = hasViolation ? ' <span title="Есть отметка вне территории">⚠️</span>' : '';
       const selCls = (_selectedAgent === name) ? ' selected' : '';
       return `<span class="ci-chip ${cls}${selCls}" style="cursor:pointer" onclick="selectAgent('${name}')" title="Показать только этого агента">
-        <span class="ci-dot"></span>${icon} ${dispName(name)}
+        <span class="ci-dot" style="background:${dotColor};color:${dotColor}"></span>${icon} ${dispName(name)}${warnBadge}
       </span>`;
     }).join('');
   }
@@ -1332,6 +1364,70 @@ async function requestCheckinsNow(){
 }
 
 // ── TELEGRAM FUNCTIONS ────────────────────────────────────────
+
+async function openTerritoriesModal() {
+  if (!BOT_URL) { toast('⚠️ Бот не настроен'); return; }
+  const modal = document.getElementById('territories-modal');
+  const listEl = document.getElementById('territories-list');
+  listEl.innerHTML = '<span style="font-size:12px;color:var(--text3)">Загрузка...</span>';
+  modal.style.display = 'flex';
+
+  const secret = localStorage.getItem('as_api_secret') || 'as_secret_2026';
+  const allNames = getAllTpNamesFromDb(); // все ТП из последнего загруженного месяца
+  let current = {};
+  try {
+    const r = await fetch(`${BOT_URL}/territories`, { headers: {'X-API-Secret': secret} });
+    current = await r.json();
+  } catch(e) {
+    toast('❌ Не удалось загрузить текущие территории: ' + e.message);
+  }
+
+  listEl.innerHTML = allNames.map(name => {
+    const safeId = 'terr-' + btoa(unescape(encodeURIComponent(name))).replace(/[^a-zA-Z0-9]/g,'');
+    const val = (current[name] || []).join(', ');
+    return `<div style="display:flex;flex-direction:column;gap:3px">
+      <label style="font-size:11.5px;color:var(--text2)">${dispName(name)}</label>
+      <input type="text" id="${safeId}" data-name="${encodeURIComponent(name)}" value="${val}"
+        placeholder="например: Ногинск, Электросталь"
+        style="padding:6px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:12px;font-family:inherit">
+    </div>`;
+  }).join('');
+}
+
+function getAllTpNamesFromDb() {
+  if (!DB || !DB.months) return [];
+  const keys = Object.keys(DB.months).sort();
+  const lastKey = keys[keys.length - 1];
+  if (!lastKey) return [];
+  return (DB.months[lastKey].tp || []).map(t => t.name);
+}
+
+async function saveTerritories() {
+  if (!BOT_URL) { toast('⚠️ Бот не настроен'); return; }
+  const secret = localStorage.getItem('as_api_secret') || 'as_secret_2026';
+  const inputs = document.querySelectorAll('#territories-list input[data-name]');
+  const territories = {};
+  inputs.forEach(inp => {
+    const name = decodeURIComponent(inp.dataset.name);
+    const cities = inp.value.split(',').map(c => c.trim()).filter(Boolean);
+    if (cities.length) territories[name] = cities;
+  });
+  try {
+    const r = await fetch(`${BOT_URL}/territories`, {
+      method: 'POST', headers: {'Content-Type':'application/json','X-API-Secret': secret},
+      body: JSON.stringify({territories})
+    });
+    const res = await r.json();
+    if (res.status === 'ok') {
+      toast('✅ Территории сохранены');
+      document.getElementById('territories-modal').style.display = 'none';
+    } else {
+      toast('❌ Ошибка сохранения');
+    }
+  } catch(e) {
+    toast('❌ Не могу сохранить: ' + e.message);
+  }
+}
 
 function showBotSettings() {
   const modal = document.getElementById('tg-modal');

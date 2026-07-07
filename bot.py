@@ -60,6 +60,7 @@ def load_db():
     db.setdefault("checkins", {})          # {date: {tp_name: [{lat, lon, ts}, ...]}}
     db.setdefault("checkin_requests", {})  # {date: {tp_name: {"sent_at": iso, "responded": bool}}}
     db.setdefault("awaiting_photo", {})    # {user_id: {"date":, "name":, "idx":}} — ждём фото после локации
+    db.setdefault("territories", {})       # {tp_name: [city1, city2, ...]} — закреплённые города
     db.setdefault("tp_name_codes", {})     # {short_code: full_tp_name} — для callback_data кнопок
     return db
 
@@ -243,6 +244,59 @@ def tp_name_for_user(user_id, db):
             return name
     return None
 
+def reverse_geocode_location(lat, lon):
+    """Бесплатный обратный геокодер OpenStreetMap Nominatim — возвращает
+    набор возможных названий места, от самого точного к общему.
+    Для точек внутри Москвы важнее всего city_district/suburb
+    (например, "Лефортово"), а не просто "Москва" — иначе все точки в
+    городе считались бы одним местом. zoom=14 даёт достаточно детальный
+    уровень (район), а не только город."""
+    try:
+        r = requests.get(
+            "https://nominatim.openstreetmap.org/reverse",
+            params={"lat": lat, "lon": lon, "format": "json", "zoom": 14, "addressdetails": 1},
+            headers={"User-Agent": "AS-Partner-Dashboard/1.0"},
+            timeout=10
+        )
+        addr = r.json().get("address", {})
+        candidates = [
+            addr.get("city_district"), addr.get("suburb"), addr.get("borough"),
+            addr.get("town"), addr.get("village"),
+            addr.get("municipality"), addr.get("county"), addr.get("city"),
+        ]
+        return [c for c in candidates if c]
+    except Exception as e:
+        logging.error(f"reverse_geocode_location error: {e}")
+        return []
+
+def resolve_and_check_territory(db, tp_name, lat, lon, contact_user_id):
+    """Определяет место чек-ина и, если агенту назначена территория,
+    проверяет попадание по ЛЮБОМУ из кандидатов названий (район/город/
+    округ) — Nominatim по-разному называет один и тот же чек-ин в
+    зависимости от точки. Если нет совпадений — ставит на разбор Валере
+    и сразу просит объяснение у агента."""
+    candidates = reverse_geocode_location(lat, lon)
+    display_place = candidates[0] if candidates else None
+    outside = False
+    assigned = db.get("territories", {}).get(tp_name, [])
+    if candidates and assigned:
+        candidates_norm = [c.strip().lower() for c in candidates]
+        assigned_norm = [c.strip().lower() for c in assigned if c.strip()]
+        matches = any(
+            cn == an or cn in an or an in cn
+            for cn in candidates_norm for an in assigned_norm
+        )
+        if not matches:
+            outside = True
+            register_pending_calls(db, {"territory": [tp_name]})
+            if contact_user_id:
+                send_message(
+                    f"📍 Валера заметил, что ты в районе «{display_place}» — это не твоя закреплённая территория. "
+                    f"Напиши, пожалуйста, объяснение прямо сюда.",
+                    chat_id=contact_user_id
+                )
+    return display_place, outside
+
 def handle_checkin(msg, db):
     """Обрабатывает входящее сообщение с геолокацией от агента.
     Фото теперь обязательно — чек-ин считается завершённым только после
@@ -261,6 +315,12 @@ def handle_checkin(msg, db):
     matched_key = tp_name_for_user(user_id, db) or match_tp_name(user_name, all_tp_names) or user_name
 
     point = {"lat": loc["latitude"], "lon": loc["longitude"], "ts": now_iso, "photo_file_id": None}
+
+    # Проверяем территорию — не бросает исключение наружу, если геокодер недоступен
+    city, outside = resolve_and_check_territory(db, matched_key, loc["latitude"], loc["longitude"], user_id)
+    point["resolved_city"] = city
+    point["outside_territory"] = outside
+
     day_points = db.setdefault("checkins", {}).setdefault(date_key, {})
     day_points.setdefault(matched_key, []).append(point)
     point_idx = len(day_points[matched_key]) - 1
@@ -1183,6 +1243,24 @@ def get_checkin_photo(file_id):
     except Exception as e:
         logging.error(f"get_checkin_photo error: {e}")
         return jsonify({"error": "Failed to fetch photo"}), 500
+
+# Территории: закреплённые города по каждому ТП
+@app.route("/territories", methods=["GET"])
+def get_territories():
+    if not check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    db = load_db()
+    return jsonify(db.get("territories", {}))
+
+@app.route("/territories", methods=["POST"])
+def set_territories():
+    if not check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    data = request.json or {}
+    db = load_db()
+    db["territories"] = data.get("territories", {})
+    save_db(db)
+    return jsonify({"status": "ok"})
 
 # Триггер отчёта в TG (вызывается дашбордом после загрузки)
 @app.route("/send-report", methods=["POST"])

@@ -6,8 +6,7 @@
 <title>АС — Партнёрский дашборд</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://api-maps.yandex.ru/2.1/?apikey=a5aade45-b881-43ec-8f38-6d59af7cb58e&lang=ru_RU" type="text/javascript"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 :root{
@@ -168,14 +167,30 @@ tr:last-child td{border-bottom:none}
 #map-canvas{height:480px;width:100%;background:var(--bg3)}
 .map-date-row{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}
 .map-date-input{padding:6px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:12px;font-family:inherit}
+.week-nav{display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.week-arrow{width:28px;height:28px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text2);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:14px;transition:all .2s}
+.week-arrow:hover:not(:disabled){border-color:var(--mint);color:var(--mint)}
+.week-arrow:disabled{opacity:.3;cursor:not-allowed}
+.week-range-label{font-size:11px;color:var(--text3);margin-right:4px}
+.day-chip{padding:6px 12px;border:1px solid var(--border);border-radius:10px;background:transparent;cursor:pointer;font-size:11.5px;color:var(--text2);font-family:inherit;transition:all .2s;text-align:center;min-width:46px}
+.day-chip .dc-dow{display:block;font-size:9px;opacity:.7;text-transform:uppercase}
+.day-chip .dc-num{display:block;font-size:13px;font-weight:600;margin-top:1px}
+.day-chip:hover:not(:disabled){border-color:var(--mint);color:var(--mint)}
+.day-chip.on{background:var(--mint);color:#000;border-color:var(--mint);box-shadow:0 0 16px var(--mint-glow)}
+.day-chip.today:not(.on){border-color:var(--mint);color:var(--mint)}
+.day-chip:disabled{opacity:.25;cursor:not-allowed}
+.ci-chip.selected{outline:2px solid var(--mint);outline-offset:1px}
 .checkin-legend{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+.photo-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-top:14px}
+.photo-card{border-radius:var(--radius-sm);overflow:hidden;border:1px solid var(--border);cursor:pointer;background:var(--bg3)}
+.photo-card img{width:100%;height:110px;object-fit:cover;display:block}
+.photo-card .pc-label{padding:6px 8px;font-size:11px;color:var(--text2)}
+.photo-card .pc-label b{color:var(--text);display:block;font-size:11.5px}
 .ci-chip{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:600}
 .ci-ok{background:var(--mint-dim);color:var(--mint);border:1px solid var(--border2)}
 .ci-missed{background:var(--red-dim);color:var(--red);border:1px solid rgba(232,64,64,0.3)}
 .ci-dot{width:6px;height:6px;border-radius:50%;background:currentColor}
-.leaflet-popup-content-wrapper{background:var(--card);color:var(--text);border-radius:var(--radius-sm)}
-.leaflet-popup-tip{background:var(--card)}
-.leaflet-popup-content{font-family:'Inter',sans-serif;font-size:12px}
+.ymaps-2-1-79-balloon,.ymaps-2-1-79-islets_balloon_layout{background:var(--card) !important;color:var(--text) !important}
 </style>
 </head>
 <body>
@@ -342,8 +357,12 @@ tr:last-child td{border-bottom:none}
 
 <!-- КАРТА (ЧЕК-ИНЫ ГЕОЛОКАЦИИ) -->
 <div id="tmp" style="display:none">
-  <div class="map-date-row">
-    <input type="date" id="map-date" class="map-date-input" onchange="loadCheckinsForDate()">
+  <div class="week-nav">
+    <button class="week-arrow" id="week-prev" onclick="shiftWeek(-1)" title="Предыдущая неделя">←</button>
+    <span class="week-range-label" id="week-range-label"></span>
+    <button class="week-arrow" id="week-next" onclick="shiftWeek(1)" title="Следующая неделя">→</button>
+    <div id="day-chips" style="display:flex;gap:6px;margin-left:6px;flex-wrap:wrap"></div>
+    <input type="date" id="map-date" class="map-date-input" style="margin-left:auto" onchange="onManualDatePick()" title="Или выбрать точную дату — например, для архива за прошлые месяцы">
     <button class="upload-btn" onclick="loadCheckinsForDate()" style="padding:6px 12px">🔄 Обновить</button>
     <span id="map-loading" style="font-size:11px;color:var(--text3)"></span>
   </div>
@@ -353,6 +372,10 @@ tr:last-child td{border-bottom:none}
   <div class="card full" style="margin-top:12px">
     <div class="ct"><span class="dot"></span>Кто отметился / не отметился сегодня</div>
     <div class="checkin-legend" id="checkin-legend"></div>
+  </div>
+  <div class="card full" style="margin-top:12px">
+    <div class="ct"><span class="dot"></span>Фото с точек чек-ина</div>
+    <div class="photo-gallery" id="checkin-gallery"></div>
   </div>
 </div>
 
@@ -1021,30 +1044,121 @@ function sw(id,el){
 }
 
 
-// ── КАРТА / ЧЕК-ИНЫ ГЕОЛОКАЦИИ ─────────────────────────────────
+// ── КАРТА / ЧЕК-ИНЫ ГЕОЛОКАЦИИ (Яндекс.Карты) ──────────────────
 
 let _map = null;
-let _mapLayers = [];
+let _mapReadyPromise = null;
 const MAP_COLORS = ['#4ad286','#2980b9','#f5a623','#e84040','#9b59b6','#1abc9c','#e67e22','#3498db'];
 
 function dispName(name){ return (name||'').split('(')[0].trim(); }
 
+function ensureMapReady(){
+  if (_mapReadyPromise) return _mapReadyPromise;
+  _mapReadyPromise = new Promise(resolve => {
+    ymaps.ready(() => {
+      _map = new ymaps.Map('map-canvas', {
+        center: [55.751244, 37.618423], // Москва по умолчанию, дальше подстраиваем под точки
+        zoom: 10,
+        controls: ['zoomControl', 'typeSelector']
+      });
+      resolve();
+    });
+  });
+  return _mapReadyPromise;
+}
+
 function initMapIfNeeded(){
-  if (_map) return;
-  _map = L.map('map-canvas').setView([55.751244, 37.618423], 10); // Москва по умолчанию, дальше fitBounds
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '© OpenStreetMap',
-    maxZoom: 19
-  }).addTo(_map);
+  ensureMapReady();
+}
+
+// ── НЕДЕЛЬНАЯ НАВИГАЦИЯ ──────────────────────────────────────
+
+let _selectedDate = null;   // 'YYYY-MM-DD' — что сейчас показываем
+let _weekMonday   = null;   // Date — понедельник отображаемой недели
+
+function toDateStr(d){
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+function getMonday(d){
+  const dt = new Date(d);
+  const day = dt.getDay(); // 0=вс, 1=пн, ...
+  const diff = (day === 0 ? -6 : 1 - day);
+  dt.setDate(dt.getDate() + diff);
+  dt.setHours(0,0,0,0);
+  return dt;
+}
+const DOW_LABELS = ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
+
+function renderWeekStrip(){
+  const today = new Date(); today.setHours(0,0,0,0);
+  const todayStr = toDateStr(today);
+  const chipsEl = document.getElementById('day-chips');
+  const rangeEl = document.getElementById('week-range-label');
+
+  const days = [];
+  for (let i=0;i<7;i++){
+    const d = new Date(_weekMonday);
+    d.setDate(d.getDate()+i);
+    days.push(d);
+  }
+  const fmt = d => d.toLocaleDateString('ru-RU', {day:'numeric', month:'short'});
+  rangeEl.textContent = `${fmt(days[0])} – ${fmt(days[6])}`;
+
+  chipsEl.innerHTML = days.map((d,i) => {
+    const dateStr = toDateStr(d);
+    const isFuture = dateStr > todayStr;
+    const isToday  = dateStr === todayStr;
+    const isSel    = dateStr === _selectedDate;
+    const cls = ['day-chip'];
+    if (isSel) cls.push('on');
+    if (isToday) cls.push('today');
+    return `<button class="${cls.join(' ')}" ${isFuture?'disabled':''} onclick="selectDay('${dateStr}')">
+      <span class="dc-dow">${DOW_LABELS[i]}</span><span class="dc-num">${d.getDate()}</span>
+    </button>`;
+  }).join('');
+
+  // Нельзя листать дальше недели, где сегодняшний день
+  const nextWeekMonday = new Date(_weekMonday); nextWeekMonday.setDate(nextWeekMonday.getDate()+7);
+  document.getElementById('week-next').disabled = nextWeekMonday > today;
+}
+
+function shiftWeek(dir){
+  _weekMonday.setDate(_weekMonday.getDate() + dir*7);
+  renderWeekStrip();
+  // Автоматически выбираем понедельник новой недели (или сегодня, если это текущая неделя)
+  const today = new Date(); today.setHours(0,0,0,0);
+  const mondayStr = toDateStr(_weekMonday);
+  const todayStr  = toDateStr(today);
+  const weekEnd = new Date(_weekMonday); weekEnd.setDate(weekEnd.getDate()+6);
+  const pick = (todayStr >= mondayStr && todayStr <= toDateStr(weekEnd)) ? todayStr : mondayStr;
+  selectDay(pick);
+}
+
+function selectDay(dateStr){
+  _selectedDate = dateStr;
+  document.getElementById('map-date').value = dateStr;
+  renderWeekStrip();
+  _selectedAgent = null; // сброс фильтра по агенту при смене дня
+  fetchCheckins(dateStr);
+}
+
+function onManualDatePick(){
+  // Точный выбор даты — например, для архива за прошлые месяцы
+  const val = document.getElementById('map-date').value;
+  if (!val) return;
+  _weekMonday = getMonday(new Date(val + 'T00:00:00'));
+  selectDay(val);
 }
 
 function loadCheckinsForDate(){
-  const input = document.getElementById('map-date');
-  if (!input.value) {
+  if (!_selectedDate) {
     const today = new Date();
-    input.value = today.toISOString().slice(0,10);
+    _selectedDate = toDateStr(today);
+    _weekMonday = getMonday(today);
+    document.getElementById('map-date').value = _selectedDate;
+    renderWeekStrip();
   }
-  fetchCheckins(input.value);
+  fetchCheckins(_selectedDate);
 }
 
 async function fetchCheckins(date){
@@ -1053,9 +1167,10 @@ async function fetchCheckins(date){
   loadingEl.textContent = 'Загрузка...';
   const secret = localStorage.getItem('as_api_secret') || 'as_secret_2026';
   try {
+    await ensureMapReady();
     const r = await fetch(`${BOT_URL}/checkins/${date}`, { headers: {'X-API-Secret': secret} });
     const data = await r.json();
-    renderMapData(data);
+    await renderMapData(data, secret);
   } catch(e) {
     toast('❌ Не удалось загрузить чек-ины: ' + e.message);
   } finally {
@@ -1063,57 +1178,142 @@ async function fetchCheckins(date){
   }
 }
 
-function renderMapData(data){
-  initMapIfNeeded();
-  // Чистим прошлые маркеры/линии
-  _mapLayers.forEach(l => _map.removeLayer(l));
-  _mapLayers = [];
+let _photoBlobUrls = [];
 
+async function fetchPhotoBlobUrl(fileId, secret){
+  try {
+    const r = await fetch(`${BOT_URL}/checkin-photo/${fileId}`, { headers: {'X-API-Secret': secret} });
+    if (!r.ok) return null;
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    _photoBlobUrls.push(url);
+    return url;
+  } catch(e) {
+    return null;
+  }
+}
+
+let _lastCheckinsData = null;
+let _lastSecret = null;
+let _selectedAgent = null; // null = показываем всех
+
+async function renderMapData(data, secret){
+  _lastCheckinsData = data;
+  _lastSecret = secret;
+
+  // Фото подгружаем один раз при загрузке дня — фильтр по агенту их не трогает
   const checkins = data.checkins || {};
-  const reqs     = data.requests || {};
-  const allBounds = [];
-  const names = Object.keys(checkins);
+  _photoBlobUrls.forEach(u => URL.revokeObjectURL(u));
+  _photoBlobUrls = [];
+  const photoJobs = [];
+  Object.keys(checkins).forEach((name) => {
+    (checkins[name] || []).forEach((p) => {
+      if (p.photo_file_id) {
+        photoJobs.push(
+          fetchPhotoBlobUrl(p.photo_file_id, secret).then(url => { p._photoUrl = url; })
+        );
+      }
+    });
+  });
+  await Promise.all(photoJobs);
 
-  names.forEach((name, i) => {
+  applyMapFilter();
+}
+
+function selectAgent(name){
+  _selectedAgent = (_selectedAgent === name) ? null : name; // повторный клик — сброс фильтра
+  applyMapFilter();
+}
+
+function showAllAgents(){
+  _selectedAgent = null;
+  applyMapFilter();
+}
+
+function applyMapFilter(){
+  if (!_map || !_lastCheckinsData) return;
+  _map.geoObjects.removeAll();
+
+  const checkins = _lastCheckinsData.checkins || {};
+  const reqs     = _lastCheckinsData.requests || {};
+  const allCoords = [];
+  const allNamesFull = Object.keys(checkins);
+  const names = _selectedAgent ? allNamesFull.filter(n => n === _selectedAgent) : allNamesFull;
+  const galleryItems = [];
+
+  names.forEach((name) => {
+    const i = allNamesFull.indexOf(name); // цвет закреплён за агентом независимо от фильтра
     const points = (checkins[name] || []).slice().sort((a,b) => a.ts.localeCompare(b.ts));
     if (!points.length) return;
     const color = MAP_COLORS[i % MAP_COLORS.length];
-    const latlngs = points.map(p => [p.lat, p.lon]);
-    latlngs.forEach(ll => allBounds.push(ll));
+    const coords = points.map(p => [p.lat, p.lon]);
+    coords.forEach(c => allCoords.push(c));
 
-    if (latlngs.length > 1) {
-      const line = L.polyline(latlngs, {color, weight: 2, opacity: 0.6}).addTo(_map);
-      _mapLayers.push(line);
+    if (coords.length > 1) {
+      const line = new ymaps.Polyline(coords, {}, {
+        strokeColor: color, strokeWidth: 2, strokeOpacity: 0.6
+      });
+      _map.geoObjects.add(line);
     }
     points.forEach((p, idx) => {
       const time = new Date(p.ts).toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'});
-      const marker = L.circleMarker([p.lat, p.lon], {
-        radius: 7, color, fillColor: color, fillOpacity: 0.85, weight: 2
-      }).addTo(_map);
-      marker.bindPopup(`<b>${dispName(name)}</b><br>${time}${idx===points.length-1?' (последняя)':''}`);
-      _mapLayers.push(marker);
+      const photoHtml = p._photoUrl
+        ? `<br><img src="${p._photoUrl}" style="max-width:200px;border-radius:8px;margin-top:6px;display:block">`
+        : '<br><i style="opacity:.6">без фото</i>';
+      const placemark = new ymaps.Placemark([p.lat, p.lon], {
+        balloonContentHeader: dispName(name),
+        balloonContentBody: `${time}${idx===points.length-1?' (последняя)':''}${photoHtml}`
+      }, {
+        preset: 'islands#circleIcon',
+        iconColor: color
+      });
+      _map.geoObjects.add(placemark);
+      if (p._photoUrl) galleryItems.push({name, ts: p.ts, url: p._photoUrl});
     });
   });
 
-  if (allBounds.length) {
-    _map.fitBounds(allBounds, {padding: [30,30]});
+  if (allCoords.length === 1) {
+    _map.setCenter(allCoords[0], 15, {duration: 300});
+  } else if (allCoords.length > 1) {
+    _map.setBounds(_map.geoObjects.getBounds(), {checkZoomRange: true, zoomMargin: 40, duration: 300});
   }
 
-  // Легенда: кто отметился / кто пропустил
+  // Легенда: кто отметился / кто пропустил — кликабельно, фильтрует карту на одного агента
   const legendEl = document.getElementById('checkin-legend');
-  const allNames = new Set([...Object.keys(checkins), ...Object.keys(reqs)]);
+  const allNames = new Set([...allNamesFull, ...Object.keys(reqs)]);
   if (!allNames.size) {
     legendEl.innerHTML = '<span style="font-size:12px;color:var(--text3)">Нет данных за эту дату</span>';
-    return;
+  } else {
+    const resetChip = _selectedAgent
+      ? `<span class="ci-chip ci-ok" style="cursor:pointer;background:var(--bg3)" onclick="showAllAgents()">↺ Показать всех</span>`
+      : '';
+    legendEl.innerHTML = resetChip + [...allNames].map(name => {
+      const hasCheckin = (checkins[name]||[]).length > 0;
+      const reqInfo = reqs[name];
+      const missed = reqInfo && !reqInfo.responded && !hasCheckin;
+      const cls = missed ? 'ci-missed' : 'ci-ok';
+      const icon = missed ? '✕' : '✓';
+      const selCls = (_selectedAgent === name) ? ' selected' : '';
+      return `<span class="ci-chip ${cls}${selCls}" style="cursor:pointer" onclick="selectAgent('${name}')" title="Показать только этого агента">
+        <span class="ci-dot"></span>${icon} ${dispName(name)}
+      </span>`;
+    }).join('');
   }
-  legendEl.innerHTML = [...allNames].map(name => {
-    const hasCheckin = (checkins[name]||[]).length > 0;
-    const reqInfo = reqs[name];
-    const missed = reqInfo && !reqInfo.responded && !hasCheckin;
-    const cls = missed ? 'ci-missed' : 'ci-ok';
-    const icon = missed ? '✕' : '✓';
-    return `<span class="ci-chip ${cls}"><span class="ci-dot"></span>${icon} ${dispName(name)}</span>`;
-  }).join('');
+
+  // Галерея фото — по видимым (с учётом фильтра) точкам с фото за выбранный день
+  const galleryEl = document.getElementById('checkin-gallery');
+  if (!galleryItems.length) {
+    galleryEl.innerHTML = '<span style="font-size:12px;color:var(--text3)">Фото за эту дату пока нет</span>';
+  } else {
+    galleryItems.sort((a,b) => a.ts.localeCompare(b.ts));
+    galleryEl.innerHTML = galleryItems.map(item => {
+      const time = new Date(item.ts).toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'});
+      return `<div class="photo-card" onclick="window.open('${item.url}','_blank')">
+        <img src="${item.url}" loading="lazy">
+        <div class="pc-label"><b>${dispName(item.name)}</b>${time}</div>
+      </div>`;
+    }).join('');
+  }
 }
 
 async function requestCheckinsNow(){

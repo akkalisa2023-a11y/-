@@ -1,5 +1,6 @@
 import os, json, logging, random, calendar
-from flask import Flask, request, jsonify
+from zoneinfo import ZoneInfo
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import requests
 from datetime import datetime, timedelta
@@ -58,6 +59,7 @@ def load_db():
     db.setdefault("answered_calls", [])
     db.setdefault("checkins", {})          # {date: {tp_name: [{lat, lon, ts}, ...]}}
     db.setdefault("checkin_requests", {})  # {date: {tp_name: {"sent_at": iso, "responded": bool}}}
+    db.setdefault("awaiting_photo", {})    # {user_id: {"date":, "name":, "idx":}} — ждём фото после локации
     db.setdefault("tp_name_codes", {})     # {short_code: full_tp_name} — для callback_data кнопок
     return db
 
@@ -190,7 +192,7 @@ def send_location_keyboard(chat_id):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": chat_id,
-        "text": "📍 Валера просит отметиться — жми кнопку ниже",
+        "text": "📍 Валера просит отметиться — жми кнопку ниже, а следом пришли фото с точки (обязательно)",
         "reply_markup": {
             "keyboard": [[{"text": "📍 Отправить локацию", "request_location": True}]],
             "resize_keyboard": True,
@@ -242,7 +244,9 @@ def tp_name_for_user(user_id, db):
     return None
 
 def handle_checkin(msg, db):
-    """Обрабатывает входящее сообщение с геолокацией от агента"""
+    """Обрабатывает входящее сообщение с геолокацией от агента.
+    Фото теперь обязательно — чек-ин считается завершённым только после
+    того, как следом придёт фото (см. handle_checkin_photo)."""
     from_user = msg.get("from", {})
     user_id   = from_user.get("id", "")
     user_name = (from_user.get("first_name", "") + " " + from_user.get("last_name", "")).strip()
@@ -256,22 +260,66 @@ def handle_checkin(msg, db):
     all_tp_names = get_all_tp_names(db)
     matched_key = tp_name_for_user(user_id, db) or match_tp_name(user_name, all_tp_names) or user_name
 
-    point = {"lat": loc["latitude"], "lon": loc["longitude"], "ts": now_iso}
+    point = {"lat": loc["latitude"], "lon": loc["longitude"], "ts": now_iso, "photo_file_id": None}
     day_points = db.setdefault("checkins", {}).setdefault(date_key, {})
     day_points.setdefault(matched_key, []).append(point)
+    point_idx = len(day_points[matched_key]) - 1
 
-    # Закрываем ожидание чек-ина на сегодня, если оно было
-    reqs = db.get("checkin_requests", {}).get(date_key, {})
-    if matched_key in reqs:
-        reqs[matched_key]["responded"] = True
+    # Ждём фото следующим сообщением — чек-ин пока не считается отвеченным
+    db.setdefault("awaiting_photo", {})[str(user_id)] = {
+        "date": date_key, "name": matched_key, "idx": point_idx
+    }
 
     save_db(db)
-    send_message("📍 Локация принята, спасибо!", chat_id=user_id)
-    logging.info(f"Checkin saved for {matched_key}")
+    send_message(
+        "📍 Локация принята! Теперь пришли, пожалуйста, фото с этой точки 📷 — без него чек-ин не считается выполненным.",
+        chat_id=user_id
+    )
+    logging.info(f"Checkin location saved for {matched_key}, ждём фото")
+
+def handle_checkin_photo(msg, db):
+    """Обрабатывает фото, присланное следом за геолокацией — довершает чек-ин."""
+    from_user = msg.get("from", {})
+    user_id = str(from_user.get("id", ""))
+    awaiting = db.get("awaiting_photo", {})
+    pending_info = awaiting.get(user_id)
+
+    if not pending_info:
+        send_message(
+            "📷 Фото получил, но сейчас не жду его от тебя — сначала нажми кнопку локации, если это был чек-ин.",
+            chat_id=int(user_id) if user_id.isdigit() else user_id
+        )
+        return
+
+    photo_sizes = msg.get("photo", [])
+    if not photo_sizes:
+        return
+    file_id = photo_sizes[-1]["file_id"]  # последний элемент — самое большое разрешение
+
+    date_key = pending_info["date"]
+    name     = pending_info["name"]
+    idx      = pending_info["idx"]
+
+    try:
+        db["checkins"][date_key][name][idx]["photo_file_id"] = file_id
+    except (KeyError, IndexError):
+        logging.error(f"handle_checkin_photo: не нашёл точку для {name}/{date_key}/{idx}")
+        return
+
+    # Только теперь, с фото, чек-ин считается выполненным
+    reqs = db.get("checkin_requests", {}).get(date_key, {})
+    if name in reqs:
+        reqs[name]["responded"] = True
+
+    del awaiting[user_id]
+    save_db(db)
+    send_message("✅ Фото принято, чек-ин засчитан!", chat_id=int(user_id) if user_id.isdigit() else user_id)
+    logging.info(f"Checkin photo saved for {name}")
 
 def check_missed_checkins():
     """Раз в N минут смотрит, кто не ответил на сегодняшний запрос
-    геолокации дольше CHECKIN_TIMEOUT_MIN, и один раз уведомляет владельца."""
+    геолокации дольше CHECKIN_TIMEOUT_MIN, и один раз уведомляет владельца.
+    Отдельно отмечает тех, кто прислал локацию, но забыл фото."""
     try:
         db = load_db()
         date_key = today_key()
@@ -280,7 +328,11 @@ def check_missed_checkins():
             return
         now = datetime.now()
         changed = False
-        missed = []
+        missed_none  = []  # вообще не ответили
+        missed_photo = []  # локация есть, фото нет
+        awaiting = db.get("awaiting_photo", {})
+        names_awaiting_photo = {v["name"] for v in awaiting.values() if v.get("date") == date_key}
+
         for tp_name, info in reqs.items():
             if info.get("responded") or info.get("missed_notified"):
                 continue
@@ -290,15 +342,22 @@ def check_missed_checkins():
                 continue
             if now - sent_at < timedelta(minutes=CHECKIN_TIMEOUT_MIN):
                 continue
-            missed.append(clean_tp_name(tp_name))
+            display = clean_tp_name(tp_name)
+            if tp_name in names_awaiting_photo:
+                missed_photo.append(display)
+            else:
+                missed_none.append(display)
             info["missed_notified"] = True
             changed = True
-        if missed:
-            send_message(
-                "⏰ <b>Не отметились по геолокации:</b>\n\n" +
-                "\n".join(f"👤 {name}" for name in missed),
-                chat_id=OWNER_ID
-            )
+
+        if missed_none or missed_photo:
+            lines = ["⏰ <b>Не отметились по геолокации:</b>", ""]
+            if missed_none:
+                lines += [f"👤 {name}" for name in missed_none]
+            if missed_photo:
+                lines += ["", "📷 <i>Прислали локацию, но не прислали фото:</i>"]
+                lines += [f"👤 {name}" for name in missed_photo]
+            send_message("\n".join(lines), chat_id=OWNER_ID)
         if changed:
             save_db(db)
     except Exception as e:
@@ -949,6 +1008,12 @@ def tg_webhook():
             handle_checkin(msg, db)
             return jsonify({"ok": True})
 
+        # Фото после чек-ина — тоже отдельно и сразу выходим
+        if "photo" in msg:
+            db = load_db()
+            handle_checkin_photo(msg, db)
+            return jsonify({"ok": True})
+
         if not text or text.startswith("/"):
             # Отвечаем на /start — сразу просим явно выбрать своё имя из списка,
             # вместо ненадёжного угадывания по first name (тёзки, разные написания)
@@ -979,7 +1044,9 @@ def tg_webhook():
             db.setdefault("tp_contacts", {})[matched_key] = {"id": user_id, "username": username}
 
         if matched_key and matched_key in pending:
-            # Это ответ на разбор Валеры — закрываем вопрос по этому ТП
+            # Это ответ на разбор Валеры — закрываем вопрос по этому ТП.
+            # Не пересылаем владельцу поштучно — только единый свод,
+            # когда ответят все, кого вызывали (см. maybe_send_summary ниже).
             info = pending.pop(matched_key)
             db.setdefault("answered_calls", []).append({
                 "name": matched_key,
@@ -987,13 +1054,6 @@ def tg_webhook():
                 "answered_at": datetime.now().isoformat(),
                 "reasons": info.get("reasons", []),
             })
-            forward_text = (
-                f"✅ <b>Ответ на разбор Валеры:</b>\n\n"
-                f"👤 {clean_tp_name(matched_key)}"
-                + (f" (@{username})" if username else "")
-                + f"\n\n💬 {text}"
-            )
-            send_message(forward_text, chat_id=OWNER_ID)
             send_message("✅ Спасибо! Передал руководителю.", chat_id=user_id)
             maybe_send_summary(db)
             save_db(db)
@@ -1101,6 +1161,28 @@ def get_checkins(date):
     points  = db.get("checkins", {}).get(date, {})
     requests_ = db.get("checkin_requests", {}).get(date, {})
     return jsonify({"date": date, "checkins": points, "requests": requests_})
+
+# Прокси для фото чек-ина — не отдаём токен бота напрямую в браузер,
+# скачиваем файл от имени бота и отдаём уже готовые байты картинки
+@app.route("/checkin-photo/<file_id>", methods=["GET"])
+def get_checkin_photo(file_id):
+    if not check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    try:
+        info = requests.get(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/getFile",
+            params={"file_id": file_id}, timeout=10
+        ).json()
+        if not info.get("ok"):
+            return jsonify({"error": "Telegram file not found"}), 404
+        file_path = info["result"]["file_path"]
+        file_resp = requests.get(
+            f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}", timeout=15
+        )
+        return Response(file_resp.content, mimetype="image/jpeg")
+    except Exception as e:
+        logging.error(f"get_checkin_photo error: {e}")
+        return jsonify({"error": "Failed to fetch photo"}), 500
 
 # Триггер отчёта в TG (вызывается дашбордом после загрузки)
 @app.route("/send-report", methods=["POST"])
@@ -1253,7 +1335,10 @@ def setup_webhook_endpoint():
 # из-за чего webhook приходилось регистрировать руками после каждого рестарта).
 setup_webhook()
 
-_scheduler = BackgroundScheduler()
+# Railway по умолчанию крутится в UTC — без явного часового пояса
+# CHECKIN_HOURS считались бы по серверному времени, а не по Москве
+MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+_scheduler = BackgroundScheduler(timezone=MOSCOW_TZ)
 _scheduler.add_job(check_reminders, "interval", minutes=15, id="valera_reminders")
 
 # Автоматическая рассылка запроса геолокации в заданные часы (CHECKIN_HOURS)

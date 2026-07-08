@@ -263,17 +263,48 @@ def tp_name_for_user(user_id, db):
             return name
     return None
 
-def reverse_geocode_location(lat, lon):
-    """Бесплатный обратный геокодер OpenStreetMap Nominatim — возвращает
-    набор возможных названий места, от самого точного к общему.
-    Для точек внутри Москвы важнее всего city_district/suburb
-    (например, "Лефортово"), а не просто "Москва" — иначе все точки в
-    городе считались бы одним местом. zoom=14 даёт достаточно детальный
-    уровень (район), а не только город."""
+YANDEX_GEOCODER_KEY = os.environ.get("YANDEX_GEOCODER_KEY", "3f602451-361b-4835-b80b-f2e0602fe739")
+
+def _reverse_geocode_yandex(lat, lon):
+    """Обратное геокодирование через Яндекс — точнее для российских
+    адресов, особенно внутри Москвы (собственные детальные карты).
+    Важно: у Яндекса координаты в запросе идут в порядке lon,lat,
+    в отличие от большинства других сервисов."""
+    try:
+        r = requests.get(
+            "https://geocode-maps.yandex.ru/1.x/",
+            params={
+                "apikey": YANDEX_GEOCODER_KEY,
+                "format": "json",
+                "geocode": f"{lon},{lat}",
+                "results": 1,
+            },
+            timeout=10
+        )
+        data = r.json()
+        members = data.get("response", {}).get("GeoObjectCollection", {}).get("featureMember", [])
+        if not members:
+            return []
+        components = members[0]["GeoObject"]["metaDataProperty"]["GeocoderMetaData"]["Address"]["Components"]
+        by_kind = {}
+        for c in components:
+            kind, name = c.get("kind"), c.get("name")
+            if kind and name:
+                by_kind.setdefault(kind, name)
+        # От точного к общему: район → округ/area → город → область
+        return [by_kind[k] for k in ("district", "area", "locality", "province") if k in by_kind]
+    except Exception as e:
+        logging.error(f"_reverse_geocode_yandex error: {e}")
+        return []
+
+def _reverse_geocode_osm(lat, lon, zoom=14):
+    """Бесплатный обратный геокодер OpenStreetMap Nominatim — резервный
+    вариант, если у Яндекса не получилось (сбой, лимит и т.п.). Возвращает
+    набор возможных названий места, от самого точного к общему."""
     try:
         r = requests.get(
             "https://nominatim.openstreetmap.org/reverse",
-            params={"lat": lat, "lon": lon, "format": "json", "zoom": 14, "addressdetails": 1},
+            params={"lat": lat, "lon": lon, "format": "json", "zoom": zoom, "addressdetails": 1},
             headers={"User-Agent": "AS-Partner-Dashboard/1.0"},
             timeout=10
         )
@@ -285,8 +316,17 @@ def reverse_geocode_location(lat, lon):
         ]
         return [c for c in candidates if c]
     except Exception as e:
-        logging.error(f"reverse_geocode_location error: {e}")
+        logging.error(f"_reverse_geocode_osm error: {e}")
         return []
+
+def reverse_geocode_location(lat, lon, zoom=14):
+    """Определяет место чек-ина — сначала пробуем геокодер Яндекса (точнее
+    для российских адресов), и только если он ничего не вернул —
+    откатываемся на бесплатный OpenStreetMap Nominatim."""
+    candidates = _reverse_geocode_yandex(lat, lon)
+    if candidates:
+        return candidates
+    return _reverse_geocode_osm(lat, lon, zoom=zoom)
 
 MOSCOW_OKRUGS = {
     "цао": "центральный административный округ",
@@ -422,9 +462,35 @@ def resolve_and_check_territory(db, tp_name, lat, lon, contact_user_id):
     округ) — Nominatim по-разному называет один и тот же чек-ин в
     зависимости от точки. Если нет совпадений — ставит на разбор Валере
     и сразу просит объяснение у агента."""
-    candidates = reverse_geocode_location(lat, lon)
+    candidates = reverse_geocode_location(lat, lon, zoom=14)
+    is_bare_moscow = len(candidates) == 1 and candidates[0].strip().lower() == "москва"
+
+    if is_bare_moscow:
+        # Первая попытка не дала района — пробуем точнее, прежде чем сдаться
+        precise = reverse_geocode_location(lat, lon, zoom=18)
+        if precise and not (len(precise) == 1 and precise[0].strip().lower() == "москва"):
+            candidates = precise
+            is_bare_moscow = False
+
     display_place = candidates[0] if candidates else None
     outside = False
+
+    # Если даже после повторной попытки геокодер видит только голое
+    # "Москва" — не штампуем это как нарушение (риск случайно закрепить
+    # весь город при одобрении запроса), но и не молчим совсем: коротко
+    # уведомляем владельца, что контроль по этой отметке не сработал,
+    # чтобы дыра была видна, а не терялась незаметно.
+    if is_bare_moscow:
+        assigned = db.get("territories", {}).get(tp_name, [])
+        if assigned:
+            send_message(
+                f"⚠️ Не смог точно определить район чек-ина у <b>{clean_tp_name(tp_name)}</b> "
+                f"(геокодер видит только «Москва» без района) — проверка территории для этой отметки пропущена. "
+                f"Координаты: {lat:.5f}, {lon:.5f}",
+                chat_id=OWNER_ID
+            )
+        return display_place, False
+
     assigned = db.get("territories", {}).get(tp_name, [])
     if candidates and assigned:
         candidates_norm = expand_okrug_aliases([c.strip().lower() for c in candidates])

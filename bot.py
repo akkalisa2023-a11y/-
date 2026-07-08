@@ -1,5 +1,6 @@
 import os, json, logging, random, calendar
 from zoneinfo import ZoneInfo
+import uuid
 
 # Railway крутится в UTC, а вся команда — по Москве. Чтобы метки времени
 # в базе (чек-ины, разборы, отчёты) не съезжали на 3 часа, везде вместо
@@ -71,6 +72,7 @@ def load_db():
     db.setdefault("checkin_requests", {})  # {date: {tp_name: {"sent_at": iso, "responded": bool}}}
     db.setdefault("awaiting_photo", {})    # {user_id: [{"date":, "name":, "idx":}, ...]} — очередь ждущих фото
     db.setdefault("territories", {})       # {tp_name: [city1, city2, ...]} — закреплённые города
+    db.setdefault("territory_requests", {})  # {request_id: {"tp_name":, "city":, "status":}}
     db.setdefault("tp_name_codes", {})     # {short_code: full_tp_name} — для callback_data кнопок
     return db
 
@@ -307,6 +309,106 @@ def expand_okrug_aliases(names):
                 expanded.add(abbr)
     return expanded
 
+def send_territory_request_button(chat_id, request_id, place):
+    """Кнопка «это моя территория» — агент может сам попросить закрепить
+    за собой место, где его засекли вне зоны. Решение всё равно за
+    руководителем (см. handle_territory_approval_callback)."""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": f"Если «{place}» — правда твоя территория, можешь попросить руководителя закрепить её за тобой:",
+        "reply_markup": {"inline_keyboard": [[
+            {"text": "📍 Запросить закрепление территории", "callback_data": f"terrreq:{request_id}"}
+        ]]}
+    }
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        logging.error(f"send_territory_request_button error: {e}")
+
+def handle_territory_request_callback(callback_query):
+    """Агент нажал «запросить закрепление» — пересылаем владельцу с
+    кнопками решения, ничего не меняем в территориях без его ответа."""
+    data_str = callback_query.get("data", "")
+    cq_id = callback_query.get("id", "")
+    from_user = callback_query.get("from", {})
+    user_id = from_user.get("id", "")
+    request_id = data_str[len("terrreq:"):]
+
+    db = load_db()
+    req = db.get("territory_requests", {}).get(request_id)
+    if not req or req.get("status") != "pending":
+        answer_callback_query(cq_id, "Запрос уже обработан или устарел")
+        return
+
+    tp_name = req["tp_name"]
+    city = req["city"]
+    req["status"] = "awaiting_approval"
+    save_db(db)
+
+    answer_callback_query(cq_id, "Отправил руководителю на согласование")
+    send_message(f"📨 Запрос по «{city}» отправлен руководителю, ждём решения.", chat_id=user_id)
+
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": OWNER_ID,
+        "text": f"🗺️ <b>{clean_tp_name(tp_name)}</b> просит закрепить за собой «{city}» — добавить в его территорию?",
+        "parse_mode": "HTML",
+        "reply_markup": {"inline_keyboard": [[
+            {"text": "✅ Одобрить", "callback_data": f"terrapp:{request_id}:yes"},
+            {"text": "❌ Отклонить", "callback_data": f"terrapp:{request_id}:no"}
+        ]]}
+    }
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        logging.error(f"handle_territory_request_callback owner notify error: {e}")
+
+def handle_territory_approval_callback(callback_query):
+    """Только владелец может одобрить/отклонить — при одобрении город
+    сразу добавляется в территорию агента на дашборде."""
+    data_str = callback_query.get("data", "")
+    cq_id = callback_query.get("id", "")
+    from_user = callback_query.get("from", {})
+    approver_id = from_user.get("id", "")
+
+    parts = data_str.split(":")
+    if len(parts) != 3:
+        return
+    _, request_id, decision = parts
+
+    if str(approver_id) != str(OWNER_ID):
+        answer_callback_query(cq_id, "Решение по территориям принимает только руководитель")
+        return
+
+    db = load_db()
+    req = db.get("territory_requests", {}).get(request_id)
+    if not req:
+        answer_callback_query(cq_id, "Запрос не найден (возможно, устарел)")
+        return
+
+    tp_name = req["tp_name"]
+    city = req["city"]
+    contact = db.get("tp_contacts", {}).get(tp_name)
+    agent_chat_id = contact.get("id") if contact else None
+
+    if decision == "yes":
+        territories = db.setdefault("territories", {})
+        lst = territories.setdefault(tp_name, [])
+        if city not in lst:
+            lst.append(city)
+        req["status"] = "approved"
+        answer_callback_query(cq_id, "Добавлено в территорию!")
+        if agent_chat_id:
+            send_message(f"✅ Руководитель подтвердил: «{city}» теперь твоя закреплённая территория.", chat_id=agent_chat_id)
+    else:
+        req["status"] = "rejected"
+        answer_callback_query(cq_id, "Отклонено")
+        if agent_chat_id:
+            send_message(f"❌ Руководитель не подтвердил «{city}» как твою территорию.", chat_id=agent_chat_id)
+
+    save_db(db)
+
 def resolve_and_check_territory(db, tp_name, lat, lon, contact_user_id):
     """Определяет место чек-ина и, если агенту назначена территория,
     проверяет попадание по ЛЮБОМУ из кандидатов названий (район/город/
@@ -333,6 +435,12 @@ def resolve_and_check_territory(db, tp_name, lat, lon, contact_user_id):
                     f"Напиши, пожалуйста, объяснение прямо сюда.",
                     chat_id=contact_user_id
                 )
+                if display_place:
+                    request_id = uuid.uuid4().hex[:10]
+                    db.setdefault("territory_requests", {})[request_id] = {
+                        "tp_name": tp_name, "city": display_place, "status": "pending"
+                    }
+                    send_territory_request_button(contact_user_id, request_id, display_place)
     return display_place, outside
 
 def handle_checkin(msg, db):
@@ -373,7 +481,8 @@ def handle_checkin(msg, db):
     save_db(db)
     send_message(
         "📍 Локация принята! Теперь пришли, пожалуйста, фото с этой точки 📷 — без него чек-ин не считается выполненным.",
-        chat_id=user_id
+        chat_id=user_id,
+        reply_markup={"remove_keyboard": True}
     )
     logging.info(f"Checkin location saved for {matched_key}, ждём фото")
 
@@ -420,7 +529,11 @@ def handle_checkin_photo(msg, db):
         reqs[name]["responded"] = True
 
     save_db(db)
-    send_message("✅ Фото принято, чек-ин засчитан!", chat_id=int(user_id) if user_id.isdigit() else user_id)
+    send_message(
+        "✅ Фото принято, чек-ин засчитан!",
+        chat_id=int(user_id) if user_id.isdigit() else user_id,
+        reply_markup={"remove_keyboard": True}
+    )
     logging.info(f"Checkin photo saved for {name}")
 
 def check_missed_checkins():
@@ -477,7 +590,7 @@ def check_missed_checkins():
 
 # ── ВСЁ ЧТО БЫЛО В ТВОЁМ ФАЙЛЕ ──────────────────────────────
 
-def send_message(text, parse_mode="HTML", chat_id=None):
+def send_message(text, parse_mode="HTML", chat_id=None, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": chat_id or CHAT_ID,
@@ -485,6 +598,8 @@ def send_message(text, parse_mode="HTML", chat_id=None):
         "parse_mode": parse_mode,
         "disable_web_page_preview": False
     }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
     r = requests.post(url, json=payload, timeout=10)
     return r.json()
 
@@ -920,7 +1035,7 @@ def get_privl_offenders(tp_list, privl, threshold_count=3, threshold_uniq=2):
                 pm = v
                 break
         if pm is None:
-            continue
+            pm = {'v': 0, 'u': 0}  # нет записей вообще — значит буквально ноль привлечений
         if pm['v'] <= threshold_count or pm['u'] <= threshold_uniq:
             offenders.append({**t, 'privl': pm})
     return offenders
@@ -939,7 +1054,7 @@ def build_privl_callout(tp_list, privl, threshold_count=3, threshold_uniq=2, sho
         "👥 <b>МАЛО ПРИВЛЕЧЕНИЙ — РАЗБОР ПОЛЁТОВ</b>",
         "",
     ]
-    for tp in offenders[:5]:
+    for tp in sorted(offenders, key=lambda x: (x['privl']['v'], x['privl']['u']))[:5]:
         name = mention_for(tp['name'], contacts)
         pm = tp['privl']
         rant = random.choice(PRIVL_RANTS).format(
@@ -1003,6 +1118,34 @@ def calc_efficiency(d, privl):
 
 # ── ОТСЛЕЖИВАНИЕ ОТВЕТОВ НА РАЗБОР ВАЛЕРЫ ───────────────────
 
+CALLOUT_REASON_TEXT = {
+    "fraud": "высокий процент фрода",
+    "drop": "заметное падение активаций по сравнению с прошлым месяцем",
+    "privl": "мало привлечённых партнёров в этом месяце",
+    "territory": "чек-ин вне закреплённой территории",
+}
+
+def send_personal_callouts(db, offenders_by_reason):
+    """Кроме общего поста в группе с тегами — личное сообщение каждому
+    нарушителю в директ (если известен его chat_id), с перечислением
+    всех поводов разом, если их несколько."""
+    contacts = db.get("tp_contacts", {})
+    reasons_by_name = {}
+    for reason, names in offenders_by_reason.items():
+        for name in names:
+            reasons_by_name.setdefault(name, []).append(reason)
+
+    for name, reasons in reasons_by_name.items():
+        contact = contacts.get(name)
+        if not contact or not contact.get("id"):
+            continue  # не зарегистрирован в боте — личку послать некому
+        reason_lines = "\n".join(f"• {CALLOUT_REASON_TEXT.get(r, r)}" for r in reasons)
+        send_message(
+            f"⚠️ Валера вызывает тебя на разбор:\n\n{reason_lines}\n\n"
+            f"Напиши, пожалуйста, объяснение прямо сюда.",
+            chat_id=contact["id"]
+        )
+
 def register_pending_calls(db, offenders_by_reason):
     """offenders_by_reason: {reason_code: [tp_name, ...]}
     Добавляет новых нарушителей в db['pending_calls'], не трогая тех,
@@ -1017,22 +1160,41 @@ def register_pending_calls(db, offenders_by_reason):
             elif reason not in entry.get("reasons", []):
                 entry["reasons"].append(reason)
 
+REASON_SUMMARY_HEADERS = {
+    "fraud": "🚨 ФРОД",
+    "drop": "📉 ПАДЕНИЕ АКТИВАЦИЙ",
+    "privl": "👥 МАЛО ПРИВЛЕЧЕНИЙ",
+}
+
 def build_answers_summary(db):
-    """Собирает свод ответов, когда все вызванные на разбор ответили"""
+    """Собирает свод ответов, когда все вызванные на разбор ответили —
+    сгруппированный по причине (сначала все по фроду, потом все по
+    падению и т.д.), а не единым плоским списком."""
     answered = db.get("answered_calls", [])
     if not answered:
         return None
+
+    by_reason = {}
+    for a in answered:
+        for r in (a.get("reasons") or ["other"]):
+            by_reason.setdefault(r, []).append(a)
+
     lines = [
         "<b>📋 Свод ответов по разбору Валеры</b>",
         f"<i>Все {len(answered)} ответили</i>", "",
         "━━━━━━━━━━━━━━━━━━━━",
     ]
-    for a in answered:
-        lines += [
-            f"👤 <b>{a['name']}</b>",
-            f"💬 {a['text']}",
-            ""
-        ]
+    # Сначала известные категории по порядку, потом всё остальное
+    ordered_reasons = list(REASON_SUMMARY_HEADERS.keys()) + [r for r in by_reason if r not in REASON_SUMMARY_HEADERS]
+    for r in ordered_reasons:
+        if r not in by_reason:
+            continue
+        header = REASON_SUMMARY_HEADERS.get(r, r.upper())
+        names_list = ", ".join(clean_tp_name(a["name"]) for a in by_reason[r])
+        lines.append(f"<b>{header} — замечены: {names_list}</b>")
+        lines.append("")
+        for a in by_reason[r]:
+            lines += [f"👤 {clean_tp_name(a['name'])}", f"💬 {a['text']}", ""]
     return "\n".join(lines)
 
 def check_reminders():
@@ -1055,16 +1217,20 @@ def check_reminders():
             if now - since < timedelta(hours=REMINDER_HOURS):
                 continue
             display_name = clean_tp_name(name)
+            reasons = info.get("reasons", [])
+            reason_lines = "\n".join(f"• {CALLOUT_REASON_TEXT.get(r, r)}" for r in reasons) or "• (причина не указана)"
             contact = db.get("tp_contacts", {}).get(name)
             if contact and contact.get("id"):
                 send_message(
-                    f"⏰ {display_name.split()[0]}, Валера всё ещё ждёт твой ответ на разбор! "
+                    f"⏰ {display_name.split()[0]}, Валера всё ещё ждёт твой ответ на разбор по пункту(-ам):\n\n"
+                    f"{reason_lines}\n\n"
                     f"Напиши объяснение прямо сюда, я передам руководителю.",
                     chat_id=contact["id"]
                 )
             else:
                 send_message(
-                    f"⏰ <b>{display_name}</b> — Валера уже {REMINDER_HOURS:.0f}ч ждёт ответа на разбор, "
+                    f"⏰ <b>{display_name}</b> — Валера уже {REMINDER_HOURS:.0f}ч ждёт ответа на разбор "
+                    f"по пункту(-ам):\n\n{reason_lines}\n\n"
                     f"а связаться в личку не вышло. Напиши боту @SV_AS_FedorBot напрямую!"
                 )
             info["reminded"] = True
@@ -1095,7 +1261,13 @@ def tg_webhook():
         # Нажатие на inline-кнопку выбора имени при регистрации
         callback_query = data.get("callback_query")
         if callback_query:
-            handle_registration_callback(callback_query)
+            cq_data = callback_query.get("data", "")
+            if cq_data.startswith("reg:"):
+                handle_registration_callback(callback_query)
+            elif cq_data.startswith("terrreq:"):
+                handle_territory_request_callback(callback_query)
+            elif cq_data.startswith("terrapp:"):
+                handle_territory_approval_callback(callback_query)
             return jsonify({"ok": True})
 
         msg = data.get("message", {})
@@ -1415,6 +1587,7 @@ def send_report():
         if any(offenders_by_reason.values()):
             db = load_db()
             register_pending_calls(db, offenders_by_reason)
+            send_personal_callouts(db, offenders_by_reason)
             save_db(db)
         praise_msg   = build_public_praise(tp_cur, has_bad=has_bad, last_date=last_date, days_in_month=days_in_month, contacts=contacts)
         callouts = [forecast_msg, fraud_msg, drop_msg, privl_msg, praise_msg]

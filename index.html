@@ -350,7 +350,7 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
   <div class="card">
     <div class="ct"><span class="dot"></span>Партнёры (Ритейл) <span id="pr-month-lbl" style="font-size:10px;color:var(--text3);text-transform:none;font-weight:400;margin-left:4px"></span></div>
     <table>
-      <thead><tr><th>#</th><th>Партнёр</th><th>Торговый</th><th>Тек.</th><th>Пред.</th><th>🚨 Фрод</th><th>% фрод</th><th>Тренд</th><th>Сегмент</th></tr></thead>
+      <thead><tr><th>#</th><th>Партнёр</th><th>Торговый</th><th>Тек.</th><th>Прогноз</th><th>Пред.</th><th>🚨 Фрод</th><th>% фрод</th><th>Тренд</th><th>Сегмент</th></tr></thead>
       <tbody id="pr-tbl"></tbody>
     </table>
   </div>
@@ -728,7 +728,7 @@ function render(){
   renderOps(d.ops);
   renderMainChart();
   renderTPTab(d,dp,pv);
-  prAllCache=buildPRAll(d.partners, dp?dp.partners:[]);
+  prAllCache=buildPRAll(d.partners, dp?dp.partners:[], d.last_date);
   renderPRSegs();
   renderPRTable(prAllCache,'all');
   currentPRFilter='all';
@@ -912,9 +912,18 @@ function renderTPTab(d,dp,pv){
   }
 }
 
-function buildPRAll(partners, prevPartners){
+function buildPRAll(partners, prevPartners, lastDate){
   const pm={};prevPartners.forEach(p=>pm[p.r]=p.acts);
-  return partners.map(p=>({...p, prev:pm[p.r]||0, seg:p.acts>=10?'p10':p.acts>=3?'p3':'p1'}));
+  let daysPassed=null, daysInMonth=null;
+  if (lastDate) {
+    const [y,mo,day] = lastDate.split('-').map(Number);
+    daysPassed = day;
+    daysInMonth = new Date(y, mo, 0).getDate();
+  }
+  return partners.map(p=>{
+    const forecast = (daysPassed && daysInMonth) ? Math.round(p.acts / daysPassed * daysInMonth) : p.acts;
+    return {...p, prev:pm[p.r]||0, seg:p.acts>=10?'p10':p.acts>=3?'p3':'p1', forecast};
+  });
 }
 
 function renderPRSegs(){
@@ -936,10 +945,10 @@ function renderPRTable(all,filter){
   if(filter==='p3') data=all.filter(p=>p.acts>=3);
   if(filter==='p10') data=all.filter(p=>p.acts>=10);
   if(filter==='fraud') data=all.filter(p=>p.fraud>0).sort((a,b)=>b.fraud-a.fraud);
-  if(filter==='grow') data=all.filter(p=>p.acts>p.prev&&p.prev>0);
-  if(filter==='drop') data=all.filter(p=>p.acts<p.prev&&p.prev>0);
+  if(filter==='grow') data=all.filter(p=>p.forecast>p.prev&&p.prev>0);
+  if(filter==='drop') data=all.filter(p=>p.forecast<p.prev&&p.prev>0);
   document.getElementById('pr-tbl').innerHTML=data.map((p,i)=>{
-    const tr=p.acts>p.prev?`<span class="up">↑${p.acts-p.prev}</span>`:p.acts<p.prev?`<span class="dn">↓${p.prev-p.acts}</span>`:'—';
+    const tr=p.forecast>p.prev?`<span class="up">↑${p.forecast-p.prev}</span>`:p.forecast<p.prev?`<span class="dn">↓${p.prev-p.forecast}</span>`:'—';
     const seg=p.acts>=10?'<span class="bdg ba2">10+</span>':p.acts>=3?'<span class="bdg bg2">3+</span>':'<span class="bdg bb2">1+</span>';
     const fraudCls=p.fraud>0?'fraud-val':'';
     return `<tr class="tr-anim ${p.fraud>0?'fraud-row':''}" style="animation-delay:${Math.min(i,20)*0.025}s">
@@ -947,6 +956,7 @@ function renderPRTable(all,filter){
       <td style="color:var(--text);max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${p.r}">${p.r}</td>
       <td style="color:var(--text3);font-size:11px;max-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${p.t}">${p.t}</td>
       <td><b style="color:var(--mint)">${p.acts}</b></td>
+      <td style="color:var(--text2)" title="Прогноз на конец месяца по текущему темпу">📈 ${p.forecast}</td>
       <td style="color:var(--text3)">${p.prev||'—'}</td>
       <td class="${fraudCls}">${p.fraud||0}</td>
       <td>${p.fraud>0?`<span class="bdg ${p.fraud_pct>30?'br2':p.fraud_pct>10?'ba2':'bg2'}">${p.fraud_pct}%</span>`:'—'}</td>

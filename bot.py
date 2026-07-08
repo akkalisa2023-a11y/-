@@ -37,6 +37,9 @@ REMINDER_HOURS = float(os.environ.get("REMINDER_HOURS", "2"))
 CHECKIN_HOURS = os.environ.get("CHECKIN_HOURS", "10,13,16,18")
 # Через сколько минут после запроса считать чек-ин пропущенным
 CHECKIN_TIMEOUT_MIN = int(os.environ.get("CHECKIN_TIMEOUT_MIN", "30"))
+# Во сколько часов присылать владельцу итоговый свод за день (после последнего
+# времени чек-ина + запас, чтобы все успели ответить)
+DAILY_SUMMARY_HOUR = int(os.environ.get("DAILY_SUMMARY_HOUR", "20"))
 
 # Railway Volume — постоянное хранилище, подключено на /data.
 # Если вдруг volume не смонтирован (например, локальный запуск), откатываемся на /tmp.
@@ -503,17 +506,23 @@ def resolve_and_check_territory(db, tp_name, lat, lon, contact_user_id):
             outside = True
             register_pending_calls(db, {"territory": [tp_name]})
             if contact_user_id:
-                send_message(
-                    f"📍 Валера заметил, что ты в районе «{display_place}» — это не твоя закреплённая территория. "
-                    f"Напиши, пожалуйста, объяснение прямо сюда.",
-                    chat_id=contact_user_id
+                combined_text = (
+                    f"📍 Валера заметил, что ты в районе «{display_place}» — это не твоя закреплённая территория.\n\n"
+                    f"• Если это разовая ситуация (заезжал по делам, менял точку и т.п.) — "
+                    f"напиши объяснение прямо сюда, текстом, сейчас же.\n\n"
+                    f"• Если «{display_place}» на самом деле должна быть твоей постоянной территорией — "
+                    f"нажми кнопку ниже, чтобы запросить её закрепление у руководителя."
                 )
+                reply_markup = None
                 if display_place:
                     request_id = uuid.uuid4().hex[:10]
                     db.setdefault("territory_requests", {})[request_id] = {
                         "tp_name": tp_name, "city": display_place, "status": "pending"
                     }
-                    send_territory_request_button(contact_user_id, request_id, display_place)
+                    reply_markup = {"inline_keyboard": [[
+                        {"text": "📍 Запросить закрепление территории", "callback_data": f"terrreq:{request_id}"}
+                    ]]}
+                send_message(combined_text, chat_id=contact_user_id, reply_markup=reply_markup)
     return display_place, outside
 
 def handle_checkin(msg, db):
@@ -608,6 +617,37 @@ def handle_checkin_photo(msg, db):
         reply_markup={"remove_keyboard": True}
     )
     logging.info(f"Checkin photo saved for {name}")
+
+def send_daily_checkin_summary():
+    """Раз в день (после последнего времени чек-ина) — свод владельцу:
+    кто сколько отметок с фото реально прошёл за сегодня, из скольких
+    ожидалось. Сортировка — сначала худшие, чтобы сразу бросались в глаза."""
+    try:
+        db = load_db()
+        date_key = today_key()
+        contacts = db.get("tp_contacts", {})
+        if not contacts:
+            return  # некому докладывать — никто ещё не зарегистрирован
+
+        checkins = db.get("checkins", {}).get(date_key, {})
+        expected = len([h for h in CHECKIN_HOURS.split(",") if h.strip()]) or 1
+
+        rows = []
+        for tp_name in contacts.keys():
+            points = checkins.get(tp_name, [])
+            done = sum(1 for p in points if p.get("photo_file_id"))
+            rows.append((tp_name, done))
+        rows.sort(key=lambda x: x[1])  # худшие сверху
+
+        lines = [f"<b>📋 Итоги чек-инов за {date_key}</b>", ""]
+        for tp_name, done in rows:
+            icon = "✅" if done >= expected else ("⚠️" if done > 0 else "❌")
+            lines.append(f"{icon} {clean_tp_name(tp_name)}: {done}/{expected}")
+
+        send_message("\n".join(lines), chat_id=OWNER_ID)
+        logging.info(f"Daily checkin summary sent for {date_key}")
+    except Exception as e:
+        logging.error(f"send_daily_checkin_summary error: {e}")
 
 def check_missed_checkins():
     """Раз в N минут смотрит, кто не ответил на сегодняшний запрос
@@ -1780,6 +1820,10 @@ _scheduler.add_job(
 )
 # Проверка пропущенных чек-инов
 _scheduler.add_job(check_missed_checkins, "interval", minutes=10, id="checkin_missed")
+_scheduler.add_job(
+    send_daily_checkin_summary, "cron",
+    hour=DAILY_SUMMARY_HOUR, minute=0, id="daily_checkin_summary"
+)
 
 _scheduler.start()
 

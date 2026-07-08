@@ -279,6 +279,34 @@ def reverse_geocode_location(lat, lon):
         logging.error(f"reverse_geocode_location error: {e}")
         return []
 
+MOSCOW_OKRUGS = {
+    "цао": "центральный административный округ",
+    "сао": "северный административный округ",
+    "свао": "северо-восточный административный округ",
+    "вао": "восточный административный округ",
+    "ювао": "юго-восточный административный округ",
+    "юао": "южный административный округ",
+    "юзао": "юго-западный административный округ",
+    "зао": "западный административный округ",
+    "сзао": "северо-западный административный округ",
+    "зелао": "зеленоградский административный округ",
+    "нао": "новомосковский административный округ",
+    "тао": "троицкий административный округ",
+}
+
+def expand_okrug_aliases(names):
+    """«ЗАО» и «Западный административный округ» — одно и то же место,
+    но текстово не совпадают. Разворачиваем сокращения в обе стороны,
+    чтобы сравнение видело эту связь."""
+    expanded = set(names)
+    for n in names:
+        if n in MOSCOW_OKRUGS:
+            expanded.add(MOSCOW_OKRUGS[n])
+        for abbr, full in MOSCOW_OKRUGS.items():
+            if n == full:
+                expanded.add(abbr)
+    return expanded
+
 def resolve_and_check_territory(db, tp_name, lat, lon, contact_user_id):
     """Определяет место чек-ина и, если агенту назначена территория,
     проверяет попадание по ЛЮБОМУ из кандидатов названий (район/город/
@@ -290,8 +318,8 @@ def resolve_and_check_territory(db, tp_name, lat, lon, contact_user_id):
     outside = False
     assigned = db.get("territories", {}).get(tp_name, [])
     if candidates and assigned:
-        candidates_norm = [c.strip().lower() for c in candidates]
-        assigned_norm = [c.strip().lower() for c in assigned if c.strip()]
+        candidates_norm = expand_okrug_aliases([c.strip().lower() for c in candidates])
+        assigned_norm = expand_okrug_aliases([c.strip().lower() for c in assigned if c.strip()])
         matches = any(
             cn == an or cn in an or an in cn
             for cn in candidates_norm for an in assigned_norm
@@ -357,6 +385,8 @@ def handle_checkin_photo(msg, db):
     user_id = str(from_user.get("id", ""))
     awaiting = db.get("awaiting_photo", {})
     queue = awaiting.get(user_id) or []
+    if isinstance(queue, dict):
+        queue = [queue]  # старый формат до обновления (одна запись, не список) — подстраховка
 
     if not queue:
         send_message(
@@ -411,7 +441,7 @@ def check_missed_checkins():
         names_awaiting_photo = {
             item["name"]
             for queue in awaiting.values()
-            for item in queue
+            for item in (queue if isinstance(queue, list) else [queue])
             if item.get("date") == date_key
         }
 

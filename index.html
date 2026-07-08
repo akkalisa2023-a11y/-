@@ -222,6 +222,7 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
       <button class="upload-btn" onclick="showBotSettings()" style="background:rgba(0,136,204,0.15);border-color:rgba(0,136,204,0.4);color:#29abe2" title="Настройки Telegram бота">✈️ TG</button>
       <button class="upload-btn" onclick="requestCheckinsNow()" style="background:rgba(74,210,134,0.1)" title="Запросить геолокацию у всех агентов прямо сейчас">📍 Запросить локации</button>
       <button class="upload-btn" onclick="openTerritoriesModal()" style="background:rgba(154,89,224,0.12);border-color:rgba(154,89,224,0.4);color:#b98cf0" title="Закрепить города за торговыми">🗺️ Территории</button>
+      <button class="upload-btn" onclick="openContactsModal()" style="background:rgba(41,171,226,0.12);border-color:rgba(41,171,226,0.4);color:#29abe2" title="Кто реально зарегистрирован в боте">👥 Контакты</button>
       <button class="upload-btn" onclick="lockAdmin()" title="Скрыть кнопки загрузки на этом устройстве" style="padding:6px 10px">🔓</button>
     </div>
     <button id="admin-unlock-btn" class="upload-btn" onclick="unlockAdmin()" style="padding:6px 10px" title="Загрузка данных доступна только администратору">🔒</button>
@@ -260,6 +261,16 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
       <button onclick="document.getElementById('territories-modal').style.display='none'"
         style="padding:8px 12px;background:transparent;color:var(--text3);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-family:inherit">✕</button>
     </div>
+  </div>
+</div>
+
+<div id="contacts-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:200;align-items:center;justify-content:center">
+  <div style="background:var(--card);border:1px solid var(--border2);border-radius:var(--radius);padding:24px;width:480px;max-width:90vw;max-height:80vh;display:flex;flex-direction:column">
+    <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:6px">👥 Контакты торговых</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:14px">Кто реально написал боту и выбрал себя из списка (может получать чек-ины и разборы). Если видите ошибочную привязку — уберите её, человеку нужно будет заново нажать /start.</div>
+    <div id="contacts-list" style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:6px;margin-bottom:12px"></div>
+    <button onclick="document.getElementById('contacts-modal').style.display='none'"
+      style="padding:8px;background:transparent;color:var(--text3);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-family:inherit">Закрыть</button>
   </div>
 </div>
 
@@ -302,7 +313,7 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
   <div class="card" style="margin-bottom:12px">
     <div class="ct"><span class="dot"></span>Рейтинг торговых <span id="tp-month-lbl" style="font-size:10px;color:var(--text3);text-transform:none;font-weight:400;margin-left:4px"></span></div>
     <table>
-      <thead><tr><th>#</th><th>Торговый</th><th>Акт.</th><th>Пред.</th><th>Партнёров</th><th>3+</th><th>10+</th><th>🚨 Фрод</th><th>% фрод</th><th>Тренд</th></tr></thead>
+      <thead><tr><th>#</th><th>Торговый</th><th>Акт.</th><th>Прогноз</th><th>Пред.</th><th>Партнёров</th><th>3+</th><th>10+</th><th>🚨 Фрод</th><th>% фрод</th><th>Тренд</th></tr></thead>
       <tbody id="tp-tbl"></tbody>
     </table>
   </div>
@@ -849,9 +860,23 @@ function renderMainChart(){
 function renderTPTab(d,dp,pv){
   document.getElementById('tp-month-lbl').textContent=`${fmtM(cur)}${pv?` · vs ${fmtM(pv)}`:''}`;
   const prevMap={};if(dp)dp.tp.forEach(t=>prevMap[t.name]=t.acts);
+
+  // Прогноз по каждому торговому — тем же способом, что и общий прогноз
+  // на "Сводке": факт ÷ дни_прошло × дней_в_месяце. Без этого тренд
+  // сравнивал бы сырой факт (на сегодня) с ПОЛНЫМ прошлым месяцем —
+  // и всегда показывал бы ложное падение, пока месяц не закончился.
+  let daysPassed = null, daysInMonth = null;
+  if (d.last_date) {
+    const [y,mo,day] = d.last_date.split('-').map(Number);
+    daysPassed = day;
+    daysInMonth = new Date(y, mo, 0).getDate();
+  }
+  const forecastFor = t => (daysPassed && daysInMonth) ? Math.round(t.acts / daysPassed * daysInMonth) : t.acts;
+
   document.getElementById('tp-tbl').innerHTML=d.tp.map((t,i)=>{
     const pa=prevMap[t.name];
-    const diff=pa!==undefined?t.acts-pa:null;
+    const fc=forecastFor(t);
+    const diff=pa!==undefined?fc-pa:null;
     const tr=diff===null?'—':diff>0?`<span class="up">↑${diff}</span>`:diff<0?`<span class="dn">↓${Math.abs(diff)}</span>`:'=';
     const rn=i===0?'g1':i===1?'s1':i===2?'b1':'';
     const fraudCls=t.fraud_pct>30?'dn':t.fraud_pct>15?'amber':'';
@@ -859,6 +884,7 @@ function renderTPTab(d,dp,pv){
       <td><span class="rn ${rn}">${i+1}</span></td>
       <td style="color:var(--text);font-weight:500">${t.name}</td>
       <td><b style="color:var(--mint)">${t.acts}</b></td>
+      <td style="color:var(--text2)" title="Прогноз на конец месяца по текущему темпу">📈 ${fc}</td>
       <td style="color:var(--text3)">${pa!==undefined?pa:'—'}</td>
       <td>${t.partners}</td>
       <td><span class="bdg bg2">${t.p3}</span></td>
@@ -1365,6 +1391,96 @@ async function requestCheckinsNow(){
 
 // ── TELEGRAM FUNCTIONS ────────────────────────────────────────
 
+async function openContactsModal() {
+  if (!BOT_URL) { toast('⚠️ Бот не настроен'); return; }
+  const modal = document.getElementById('contacts-modal');
+  const listEl = document.getElementById('contacts-list');
+  listEl.innerHTML = '<span style="font-size:12px;color:var(--text3)">Загрузка...</span>';
+  modal.style.display = 'flex';
+
+  const secret = localStorage.getItem('as_api_secret') || 'as_secret_2026';
+  try {
+    const r = await fetch(`${BOT_URL}/tp-contacts`, { headers: {'X-API-Secret': secret} });
+    const data = await r.json();
+    _inactiveTpCache = data.inactive || [];
+    renderContactsList(data.all_names || [], data.contacts || {}, _inactiveTpCache);
+  } catch(e) {
+    listEl.innerHTML = `<span style="font-size:12px;color:var(--red)">Не удалось загрузить: ${e.message}</span>`;
+  }
+}
+
+let _inactiveTpCache = [];
+
+function renderContactsList(allNames, contacts, inactiveList) {
+  const listEl = document.getElementById('contacts-list');
+  if (!allNames.length) {
+    listEl.innerHTML = '<span style="font-size:12px;color:var(--text3)">Нет данных — сначала загрузите активации</span>';
+    return;
+  }
+  const inactiveSet = new Set(inactiveList || []);
+  listEl.innerHTML = allNames.map(name => {
+    const c = contacts[name];
+    const registered = !!(c && c.id);
+    const isInactive = inactiveSet.has(name);
+    const sub = registered
+      ? (c.username ? `@${c.username}` : `id: ${c.id}`)
+      : 'не зарегистрирован в боте';
+    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;background:var(--bg3);border:1px solid ${isInactive?'rgba(232,64,64,0.35)':'var(--border)'};border-radius:var(--radius-sm);opacity:${isInactive?0.6:1}">
+      <div>
+        <div style="font-size:12.5px;color:var(--text);font-weight:500">${dispName(name)}${isInactive?' <span style="color:var(--red);font-size:10px">(уволен)</span>':''}</div>
+        <div style="font-size:10.5px;color:${registered?'var(--mint)':'var(--text3)'}">${registered?'✓ ':'○ '}${sub}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0">
+        ${registered ? `<button onclick="removeContact('${encodeURIComponent(name)}')"
+          style="padding:5px 10px;background:transparent;border:1px solid rgba(232,64,64,0.4);color:var(--red);border-radius:8px;cursor:pointer;font-size:11px;font-family:inherit;white-space:nowrap">Убрать</button>` : ''}
+        <button onclick="toggleInactive('${encodeURIComponent(name)}', ${!isInactive})"
+          style="padding:5px 10px;background:transparent;border:1px solid var(--border2);color:${isInactive?'var(--mint)':'var(--text2)'};border-radius:8px;cursor:pointer;font-size:11px;font-family:inherit;white-space:nowrap">${isInactive?'Восстановить':'Уволен(а)'}</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function toggleInactive(encodedName, makeInactive) {
+  const name = decodeURIComponent(encodedName);
+  const secret = localStorage.getItem('as_api_secret') || 'as_secret_2026';
+  try {
+    const r = await fetch(`${BOT_URL}/tp-inactive`, {
+      method: 'POST', headers: {'Content-Type':'application/json','X-API-Secret': secret},
+      body: JSON.stringify({name, inactive: makeInactive})
+    });
+    const res = await r.json();
+    if (res.status === 'ok') {
+      toast(makeInactive ? `🚫 ${dispName(name)} помечен(а) уволенным(ой)` : `✅ ${dispName(name)} восстановлен(а)`);
+      openContactsModal();
+    } else {
+      toast('❌ Не удалось сохранить');
+    }
+  } catch(e) {
+    toast('❌ Ошибка: ' + e.message);
+  }
+}
+
+async function removeContact(encodedName) {
+  const name = decodeURIComponent(encodedName);
+  if (!confirm(`Убрать привязку для «${dispName(name)}»? Ему нужно будет заново нажать /start в боте.`)) return;
+  const secret = localStorage.getItem('as_api_secret') || 'as_secret_2026';
+  try {
+    const r = await fetch(`${BOT_URL}/tp-contacts/remove`, {
+      method: 'POST', headers: {'Content-Type':'application/json','X-API-Secret': secret},
+      body: JSON.stringify({name})
+    });
+    const res = await r.json();
+    if (res.status === 'ok') {
+      toast('✅ Привязка убрана');
+      openContactsModal(); // перерисовать список
+    } else {
+      toast('❌ Не удалось убрать привязку');
+    }
+  } catch(e) {
+    toast('❌ Ошибка: ' + e.message);
+  }
+}
+
 async function openTerritoriesModal() {
   if (!BOT_URL) { toast('⚠️ Бот не настроен'); return; }
   const modal = document.getElementById('territories-modal');
@@ -1373,7 +1489,13 @@ async function openTerritoriesModal() {
   modal.style.display = 'flex';
 
   const secret = localStorage.getItem('as_api_secret') || 'as_secret_2026';
-  const allNames = getAllTpNamesFromDb(); // все ТП из последнего загруженного месяца
+  let allNames = getAllTpNamesFromDb(); // все ТП из последнего загруженного месяца
+  try {
+    const cr = await fetch(`${BOT_URL}/tp-contacts`, { headers: {'X-API-Secret': secret} });
+    const cdata = await cr.json();
+    const inactiveSet = new Set(cdata.inactive || []);
+    allNames = allNames.filter(n => !inactiveSet.has(n)); // уволенных сюда не показываем
+  } catch(e) { /* если не получилось — просто покажем всех, не критично */ }
   let current = {};
   try {
     const r = await fetch(`${BOT_URL}/territories`, { headers: {'X-API-Secret': secret} });

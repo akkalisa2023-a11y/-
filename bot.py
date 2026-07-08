@@ -73,6 +73,7 @@ def load_db():
     db.setdefault("awaiting_photo", {})    # {user_id: [{"date":, "name":, "idx":}, ...]} — очередь ждущих фото
     db.setdefault("territories", {})       # {tp_name: [city1, city2, ...]} — закреплённые города
     db.setdefault("territory_requests", {})  # {request_id: {"tp_name":, "city":, "status":}}
+    db.setdefault("inactive_tp", [])       # уволенные — скрыты из бота/территорий, но статистика остаётся
     db.setdefault("tp_name_codes", {})     # {short_code: full_tp_name} — для callback_data кнопок
     return db
 
@@ -112,16 +113,22 @@ def match_tp_name(query_name, tp_keys):
 
 import hashlib
 
-def get_all_tp_names(db):
+def get_all_tp_names(db, include_inactive=False):
     """Список всех ТП за последний загруженный месяц — используем как
     источник истины 'кто вообще есть в команде', а не только тех, кого
-    когда-либо вызывали на разбор."""
+    когда-либо вызывали на разбор. По умолчанию не включает уволенных
+    (см. db['inactive_tp']) — их статистика по активациям никуда не
+    девается, но в регистрации бота и территориях они больше не нужны."""
     months = db.get("months", {})
     if not months:
         return []
     last_key = sorted(months.keys())[-1]
     tp_list = months[last_key].get("tp", [])
-    return [t["name"] for t in tp_list]
+    names = [t["name"] for t in tp_list]
+    if not include_inactive:
+        inactive = set(db.get("inactive_tp", []))
+        names = [n for n in names if n not in inactive]
+    return names
 
 def tp_name_code(name):
     """Короткий стабильный код имени ТП — Telegram callback_data ограничен
@@ -1316,16 +1323,15 @@ def tg_webhook():
 
         db = load_db()
 
-        # Запоминаем контакт ТП по имени — на будущее (напоминания, разбор, чек-ины).
-        # Сначала пробуем сопоставить с теми, кого ждём на разборе (точнее совпадение
-        # по контексту), если не вышло — со всем списком ТП за последний месяц,
-        # чтобы контакт агента был известен даже без разбора.
+        # Сопоставляем с теми, кого ждём на разборе — чтобы закрыть вопрос,
+        # даже если человек ответил текстом, а не через кнопку регистрации.
+        # ВАЖНО: больше не записываем это угадывание в tp_contacts —
+        # регистрация (chat_id ↔ имя) происходит ТОЛЬКО через явный выбор
+        # кнопкой при /start (см. handle_registration_callback). Раньше тут
+        # было автоматическое угадывание по любому сообщению — из-за него
+        # люди попадали в контакты, даже не подтвердив, кто они.
         pending = db.get("pending_calls", {})
         matched_key = match_tp_name(user_name, pending.keys()) if pending else None
-        if not matched_key:
-            matched_key = match_tp_name(user_name, get_all_tp_names(db))
-        if matched_key:
-            db.setdefault("tp_contacts", {})[matched_key] = {"id": user_id, "username": username}
 
         if matched_key and matched_key in pending:
             # Это ответ на разбор Валеры — закрываем вопрос по этому ТП.
@@ -1497,6 +1503,52 @@ def set_territories():
     db["territories"] = data.get("territories", {})
     save_db(db)
     return jsonify({"status": "ok"})
+
+# Контакты ТП — кто реально зарегистрирован в боте (chat_id известен),
+# чтобы владелец мог видеть/актуализировать список и убрать ошибочные записи
+@app.route("/tp-contacts", methods=["GET"])
+def get_tp_contacts():
+    if not check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    db = load_db()
+    all_names = get_all_tp_names(db, include_inactive=True)  # тут показываем всех, включая уволенных — чтобы можно было управлять
+    contacts = db.get("tp_contacts", {})
+    inactive = db.get("inactive_tp", [])
+    return jsonify({"all_names": all_names, "contacts": contacts, "inactive": inactive})
+
+@app.route("/tp-inactive", methods=["POST"])
+def set_tp_inactive():
+    """Помечает торгового уволенным/активным — скрывает из бота и территорий,
+    но НЕ трогает статистику по активациям."""
+    if not check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    data = request.json or {}
+    name = data.get("name")
+    inactive = bool(data.get("inactive"))
+    if not name:
+        return jsonify({"error": "name required"}), 400
+    db = load_db()
+    lst = db.setdefault("inactive_tp", [])
+    if inactive and name not in lst:
+        lst.append(name)
+    elif not inactive and name in lst:
+        lst.remove(name)
+    save_db(db)
+    return jsonify({"status": "ok"})
+
+@app.route("/tp-contacts/remove", methods=["POST"])
+def remove_tp_contact():
+    if not check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    data = request.json or {}
+    name = data.get("name")
+    db = load_db()
+    contacts = db.get("tp_contacts", {})
+    if name in contacts:
+        del contacts[name]
+        save_db(db)
+        return jsonify({"status": "ok"})
+    return jsonify({"status": "not_found"}), 404
 
 # Триггер отчёта в TG (вызывается дашбордом после загрузки)
 @app.route("/send-report", methods=["POST"])

@@ -1,6 +1,7 @@
 import os, json, logging, random, calendar
 from zoneinfo import ZoneInfo
 import uuid
+import fcntl
 
 # Railway крутится в UTC, а вся команда — по Москве. Чтобы метки времени
 # в базе (чек-ины, разборы, отчёты) не съезжали на 3 часа, везде вместо
@@ -54,6 +55,21 @@ except Exception:
     DATA_DIR = Path("/tmp")
 
 DATA_FILE = DATA_DIR / "dash_data.json"
+_LOCK_FILE = DATA_DIR / "dash_data.lock"
+
+class db_lock:
+    """Блокировка на файле — гарантирует, что два входящих запроса от
+    Telegram (например, локация и почти сразу следом фото) не будут
+    одновременно читать-менять-писать базу и не затрут изменения друг
+    друга. Без этого гонка могла тихо стирать только что сохранённые
+    точки чек-ина или очередь ожидания фото."""
+    def __enter__(self):
+        self._f = open(_LOCK_FILE, "w")
+        fcntl.flock(self._f, fcntl.LOCK_EX)
+        return self
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        fcntl.flock(self._f, fcntl.LOCK_UN)
+        self._f.close()
 
 logging.basicConfig(level=logging.INFO)
 
@@ -1363,118 +1379,119 @@ def maybe_send_summary(db):
 def tg_webhook():
     """Принимает сообщения от пользователей боту и пересылает владельцу"""
     try:
-        data = request.json
+        with db_lock():
+            data = request.json
 
-        # Нажатие на inline-кнопку выбора имени при регистрации
-        callback_query = data.get("callback_query")
-        if callback_query:
-            cq_data = callback_query.get("data", "")
-            if cq_data.startswith("reg:"):
-                handle_registration_callback(callback_query)
-            elif cq_data.startswith("terrreq:"):
-                handle_territory_request_callback(callback_query)
-            elif cq_data.startswith("terrapp:"):
-                handle_territory_approval_callback(callback_query)
-            return jsonify({"ok": True})
+            # Нажатие на inline-кнопку выбора имени при регистрации
+            callback_query = data.get("callback_query")
+            if callback_query:
+                cq_data = callback_query.get("data", "")
+                if cq_data.startswith("reg:"):
+                    handle_registration_callback(callback_query)
+                elif cq_data.startswith("terrreq:"):
+                    handle_territory_request_callback(callback_query)
+                elif cq_data.startswith("terrapp:"):
+                    handle_territory_approval_callback(callback_query)
+                return jsonify({"ok": True})
 
-        msg = data.get("message", {})
-        if not msg:
-            return jsonify({"ok": True})
+            msg = data.get("message", {})
+            if not msg:
+                return jsonify({"ok": True})
 
-        # Реагируем ТОЛЬКО на личные сообщения боту.
-        # Всё, что происходит в группе (в т.ч. ваши собственные сообщения,
-        # обсуждения торговых между собой и т.д.) — полностью игнорируем.
-        if msg.get("chat", {}).get("type") != "private":
-            return jsonify({"ok": True})
+            # Реагируем ТОЛЬКО на личные сообщения боту.
+            # Всё, что происходит в группе (в т.ч. ваши собственные сообщения,
+            # обсуждения торговых между собой и т.д.) — полностью игнорируем.
+            if msg.get("chat", {}).get("type") != "private":
+                return jsonify({"ok": True})
 
-        from_user = msg.get("from", {})
-        text = msg.get("text", "")
-        user_name = (from_user.get("first_name", "") + " " + from_user.get("last_name", "")).strip()
-        username = from_user.get("username", "")
-        user_id = from_user.get("id", "")
+            from_user = msg.get("from", {})
+            text = msg.get("text", "")
+            user_name = (from_user.get("first_name", "") + " " + from_user.get("last_name", "")).strip()
+            username = from_user.get("username", "")
+            user_id = from_user.get("id", "")
 
-        # Геолокация (чек-ин) — обрабатываем отдельно и сразу выходим
-        if "location" in msg:
-            db = load_db()
-            handle_checkin(msg, db)
-            return jsonify({"ok": True})
-
-        # Фото после чек-ина — тоже отдельно и сразу выходим
-        if "photo" in msg:
-            db = load_db()
-            handle_checkin_photo(msg, db)
-            return jsonify({"ok": True})
-
-        if not text or text.startswith("/"):
-            # Отвечаем на /start — сразу просим явно выбрать своё имя из списка,
-            # вместо ненадёжного угадывания по first name (тёзки, разные написания)
-            if text == "/start":
+            # Геолокация (чек-ин) — обрабатываем отдельно и сразу выходим
+            if "location" in msg:
                 db = load_db()
-                send_message(
-                    "👋 Привет! Это бот АС — партнёрский дашборд.\n\nЕсли Валера вызвал тебя на разбор — пиши объяснение прямо сюда, я передам руководителю.",
-                    chat_id=user_id
-                )
-                send_registration_keyboard(user_id, db)
-            elif text == "/whoami" or text == "/register":
-                # На случай, если агент сменил телефон/аккаунт и надо перерегистрироваться
+                handle_checkin(msg, db)
+                return jsonify({"ok": True})
+
+            # Фото после чек-ина — тоже отдельно и сразу выходим
+            if "photo" in msg:
                 db = load_db()
-                send_registration_keyboard(user_id, db)
-            return jsonify({"ok": True})
+                handle_checkin_photo(msg, db)
+                return jsonify({"ok": True})
 
-        db = load_db()
+            if not text or text.startswith("/"):
+                # Отвечаем на /start — сразу просим явно выбрать своё имя из списка,
+                # вместо ненадёжного угадывания по first name (тёзки, разные написания)
+                if text == "/start":
+                    db = load_db()
+                    send_message(
+                        "👋 Привет! Это бот АС — партнёрский дашборд.\n\nЕсли Валера вызвал тебя на разбор — пиши объяснение прямо сюда, я передам руководителю.",
+                        chat_id=user_id
+                    )
+                    send_registration_keyboard(user_id, db)
+                elif text == "/whoami" or text == "/register":
+                    # На случай, если агент сменил телефон/аккаунт и надо перерегистрироваться
+                    db = load_db()
+                    send_registration_keyboard(user_id, db)
+                return jsonify({"ok": True})
 
-        # Сопоставляем с теми, кого ждём на разборе — чтобы закрыть вопрос,
-        # даже если человек ответил текстом, а не через кнопку регистрации.
-        # ВАЖНО: больше не записываем это угадывание в tp_contacts —
-        # регистрация (chat_id ↔ имя) происходит ТОЛЬКО через явный выбор
-        # кнопкой при /start (см. handle_registration_callback). Раньше тут
-        # было автоматическое угадывание по любому сообщению — из-за него
-        # люди попадали в контакты, даже не подтвердив, кто они.
-        pending = db.get("pending_calls", {})
-        matched_key = match_tp_name(user_name, pending.keys()) if pending else None
+            db = load_db()
 
-        if matched_key and matched_key in pending:
-            # Это ответ на разбор Валеры — закрываем вопрос по этому ТП.
-            info = pending.pop(matched_key)
-            reasons = info.get("reasons", [])
+            # Сопоставляем с теми, кого ждём на разборе — чтобы закрыть вопрос,
+            # даже если человек ответил текстом, а не через кнопку регистрации.
+            # ВАЖНО: больше не записываем это угадывание в tp_contacts —
+            # регистрация (chat_id ↔ имя) происходит ТОЛЬКО через явный выбор
+            # кнопкой при /start (см. handle_registration_callback). Раньше тут
+            # было автоматическое угадывание по любому сообщению — из-за него
+            # люди попадали в контакты, даже не подтвердив, кто они.
+            pending = db.get("pending_calls", {})
+            matched_key = match_tp_name(user_name, pending.keys()) if pending else None
 
-            if "territory" in reasons:
-                # Территория — особый случай: шлём владельцу сразу же,
-                # отдельно от общего свода (не копим в answered_calls,
-                # чтобы не задваивалось при финальной сводке).
-                send_message(
-                    f"📍 <b>Ответ по территории:</b>\n\n"
-                    f"👤 {clean_tp_name(matched_key)}\n\n"
-                    f"💬 {text}",
-                    chat_id=OWNER_ID
-                )
-            else:
-                db.setdefault("answered_calls", []).append({
-                    "name": matched_key,
-                    "text": text,
-                    "answered_at": now_msk().isoformat(),
-                    "reasons": reasons,
-                })
+            if matched_key and matched_key in pending:
+                # Это ответ на разбор Валеры — закрываем вопрос по этому ТП.
+                info = pending.pop(matched_key)
+                reasons = info.get("reasons", [])
 
-            send_message("✅ Спасибо! Передал руководителю.", chat_id=user_id)
-            maybe_send_summary(db)
+                if "territory" in reasons:
+                    # Территория — особый случай: шлём владельцу сразу же,
+                    # отдельно от общего свода (не копим в answered_calls,
+                    # чтобы не задваивалось при финальной сводке).
+                    send_message(
+                        f"📍 <b>Ответ по территории:</b>\n\n"
+                        f"👤 {clean_tp_name(matched_key)}\n\n"
+                        f"💬 {text}",
+                        chat_id=OWNER_ID
+                    )
+                else:
+                    db.setdefault("answered_calls", []).append({
+                        "name": matched_key,
+                        "text": text,
+                        "answered_at": now_msk().isoformat(),
+                        "reasons": reasons,
+                    })
+
+                send_message("✅ Спасибо! Передал руководителю.", chat_id=user_id)
+                maybe_send_summary(db)
+                save_db(db)
+                logging.info(f"Reply to Valera's callout matched to {matched_key}")
+                return jsonify({"ok": True})
+
+            # Не связано с конкретным разбором — обычная пересылка владельцу
             save_db(db)
-            logging.info(f"Reply to Valera's callout matched to {matched_key}")
+            forward_text = (
+                f"📩 <b>Сообщение от торгового:</b>\n\n"
+                f"👤 {user_name}"
+                + (f" (@{username})" if username else "")
+                + f"\n\n💬 {text}"
+            )
+            send_message(forward_text, chat_id=OWNER_ID)
+            send_message("✅ Твоё сообщение получено и передано руководителю!", chat_id=user_id)
+
+            logging.info(f"Message forwarded from {user_name} to owner")
             return jsonify({"ok": True})
-
-        # Не связано с конкретным разбором — обычная пересылка владельцу
-        save_db(db)
-        forward_text = (
-            f"📩 <b>Сообщение от торгового:</b>\n\n"
-            f"👤 {user_name}"
-            + (f" (@{username})" if username else "")
-            + f"\n\n💬 {text}"
-        )
-        send_message(forward_text, chat_id=OWNER_ID)
-        send_message("✅ Твоё сообщение получено и передано руководителю!", chat_id=user_id)
-
-        logging.info(f"Message forwarded from {user_name} to owner")
-        return jsonify({"ok": True})
     except Exception as e:
         logging.error(f"Webhook error: {e}")
         return jsonify({"ok": True})
@@ -1599,9 +1616,10 @@ def set_territories():
     if not check_auth():
         return jsonify({"error": "Unauthorized"}), 401
     data = request.json or {}
-    db = load_db()
-    db["territories"] = data.get("territories", {})
-    save_db(db)
+    with db_lock():
+        db = load_db()
+        db["territories"] = data.get("territories", {})
+        save_db(db)
     return jsonify({"status": "ok"})
 
 # Контакты ТП — кто реально зарегистрирован в боте (chat_id известен),
@@ -1627,13 +1645,14 @@ def set_tp_inactive():
     inactive = bool(data.get("inactive"))
     if not name:
         return jsonify({"error": "name required"}), 400
-    db = load_db()
-    lst = db.setdefault("inactive_tp", [])
-    if inactive and name not in lst:
-        lst.append(name)
-    elif not inactive and name in lst:
-        lst.remove(name)
-    save_db(db)
+    with db_lock():
+        db = load_db()
+        lst = db.setdefault("inactive_tp", [])
+        if inactive and name not in lst:
+            lst.append(name)
+        elif not inactive and name in lst:
+            lst.remove(name)
+        save_db(db)
     return jsonify({"status": "ok"})
 
 @app.route("/tp-contacts/remove", methods=["POST"])
@@ -1642,12 +1661,13 @@ def remove_tp_contact():
         return jsonify({"error": "Unauthorized"}), 401
     data = request.json or {}
     name = data.get("name")
-    db = load_db()
-    contacts = db.get("tp_contacts", {})
-    if name in contacts:
-        del contacts[name]
-        save_db(db)
-        return jsonify({"status": "ok"})
+    with db_lock():
+        db = load_db()
+        contacts = db.get("tp_contacts", {})
+        if name in contacts:
+            del contacts[name]
+            save_db(db)
+            return jsonify({"status": "ok"})
     return jsonify({"status": "not_found"}), 404
 
 # Триггер отчёта в TG (вызывается дашбордом после загрузки)

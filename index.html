@@ -1320,17 +1320,21 @@ function applyMapFilter(){
         ? `<br><img src="${p._photoUrl}" style="max-width:200px;border-radius:8px;margin-top:6px;display:block">`
         : '<br><i style="opacity:.6">без фото</i>';
       const cityHtml = p.resolved_city ? `<br>📍 ${p.resolved_city}` : '';
-      const warnHtml = p.outside_territory
-        ? `<br><b style="color:#e84040">⚠️ Вне закреплённой территории</b>` : '';
+      const tStatus = p.territory_status || (p.outside_territory ? 'violation' : 'ok'); // на случай старых записей без нового поля
+      const warnHtml = tStatus === 'violation'
+        ? `<br><b style="color:#e84040">⚠️ Вне закреплённой территории</b>`
+        : tStatus === 'unknown'
+          ? `<br><b style="color:#888">◌ Не удалось точно определить место</b>`
+          : '';
+      const iconOpts = tStatus === 'violation'
+        ? { preset: 'islands#redCircleIcon' }       // нарушение — всегда красная
+        : tStatus === 'unknown'
+          ? { preset: 'islands#grayCircleIcon' }    // серая зона — не определили, не вина агента
+          : { preset: 'islands#circleIcon', iconColor: color };
       const placemark = new ymaps.Placemark([p.lat, p.lon], {
         balloonContentHeader: dispName(name),
         balloonContentBody: `${time}${idx===points.length-1?' (последняя)':''}${cityHtml}${warnHtml}${photoHtml}`
-      }, p.outside_territory ? {
-        preset: 'islands#redCircleIcon'  // точка вне территории — всегда красная, независимо от цвета агента
-      } : {
-        preset: 'islands#circleIcon',
-        iconColor: color
-      });
+      }, iconOpts);
       _map.geoObjects.add(placemark);
       if (p._photoUrl) galleryItems.push({name, ts: p.ts, url: p._photoUrl});
     });
@@ -1355,15 +1359,17 @@ function applyMapFilter(){
       const hasCheckin = (checkins[name]||[]).length > 0;
       const reqInfo = reqs[name];
       const missed = reqInfo && !reqInfo.responded && !hasCheckin;
-      const hasViolation = (checkins[name]||[]).some(p => p.outside_territory);
+      const hasViolation = (checkins[name]||[]).some(p => (p.territory_status||(p.outside_territory?'violation':'ok')) === 'violation');
+      const hasUnknown = (checkins[name]||[]).some(p => (p.territory_status||'ok') === 'unknown');
       const colorIdx = allNamesFull.indexOf(name);
       const dotColor = colorIdx >= 0 ? MAP_COLORS[colorIdx % MAP_COLORS.length] : 'var(--text3)';
       const cls = missed ? 'ci-missed' : '';
       const icon = missed ? '✕' : '✓';
       const warnBadge = hasViolation ? ' <span title="Есть отметка вне территории">⚠️</span>' : '';
+      const unknownBadge = hasUnknown ? ' <span title="Есть отметка с неопределённым местом (не вина агента)" style="opacity:.6">◌</span>' : '';
       const selCls = (_selectedAgent === name) ? ' selected' : '';
       return `<span class="ci-chip ${cls}${selCls}" style="cursor:pointer" onclick="selectAgent('${name}')" title="Показать только этого агента">
-        <span class="ci-dot" style="background:${dotColor};color:${dotColor}"></span>${icon} ${dispName(name)}${warnBadge}
+        <span class="ci-dot" style="background:${dotColor};color:${dotColor}"></span>${icon} ${dispName(name)}${warnBadge}${unknownBadge}
       </span>`;
     }).join('');
   }

@@ -462,9 +462,12 @@ def handle_territory_approval_callback(callback_query):
 def resolve_and_check_territory(db, tp_name, lat, lon, contact_user_id):
     """Определяет место чек-ина и, если агенту назначена территория,
     проверяет попадание по ЛЮБОМУ из кандидатов названий (район/город/
-    округ) — Nominatim по-разному называет один и тот же чек-ин в
-    зависимости от точки. Если нет совпадений — ставит на разбор Валере
-    и сразу просит объяснение у агента."""
+    округ). Возвращает (display_place, status), где status один из:
+    'ok' — всё в порядке или территория не назначена;
+    'violation' — реально вне закреплённой территории;
+    'unknown' — геокодер не смог определить место даже со второй
+    попытки; это СЕРАЯ ЗОНА — не считается ничьей виной, никому не
+    прилетает никаких сообщений, дашборд просто покажет точку серым."""
     candidates = reverse_geocode_location(lat, lon, zoom=14)
     is_bare_moscow = len(candidates) == 1 and candidates[0].strip().lower() == "москва"
 
@@ -476,54 +479,44 @@ def resolve_and_check_territory(db, tp_name, lat, lon, contact_user_id):
             is_bare_moscow = False
 
     display_place = candidates[0] if candidates else None
-    outside = False
 
-    # Если даже после повторной попытки геокодер видит только голое
-    # "Москва" — не штампуем это как нарушение (риск случайно закрепить
-    # весь город при одобрении запроса), но и не молчим совсем: коротко
-    # уведомляем владельца, что контроль по этой отметке не сработал,
-    # чтобы дыра была видна, а не терялась незаметно.
     if is_bare_moscow:
-        assigned = db.get("territories", {}).get(tp_name, [])
-        if assigned:
-            send_message(
-                f"⚠️ Не смог точно определить район чек-ина у <b>{clean_tp_name(tp_name)}</b> "
-                f"(геокодер видит только «Москва» без района) — проверка территории для этой отметки пропущена. "
-                f"Координаты: {lat:.5f}, {lon:.5f}",
-                chat_id=OWNER_ID
-            )
-        return display_place, False
+        # Серая зона: ни разбора, ни уведомлений — ни владельцу, ни агенту.
+        # Дашборд отметит эту точку серым, чтобы было видно, что тут просто
+        # не хватило данных, а не что-то скрывается.
+        return display_place, "unknown"
 
     assigned = db.get("territories", {}).get(tp_name, [])
-    if candidates and assigned:
-        candidates_norm = expand_okrug_aliases([c.strip().lower() for c in candidates])
-        assigned_norm = expand_okrug_aliases([c.strip().lower() for c in assigned if c.strip()])
-        matches = any(
-            cn == an or cn in an or an in cn
-            for cn in candidates_norm for an in assigned_norm
+    if not candidates or not assigned:
+        return display_place, "ok"  # территория не назначена — сверять не с чем, значит всё ок
+
+    candidates_norm = expand_okrug_aliases([c.strip().lower() for c in candidates])
+    assigned_norm = expand_okrug_aliases([c.strip().lower() for c in assigned if c.strip()])
+    matches = any(
+        cn == an or cn in an or an in cn
+        for cn in candidates_norm for an in assigned_norm
+    )
+    if matches:
+        return display_place, "ok"
+
+    register_pending_calls(db, {"territory": [tp_name]})
+    if contact_user_id:
+        combined_text = (
+            f"📍 Валера заметил, что ты в районе «{display_place}» — это не твоя закреплённая территория.\n\n"
+            f"• Если это разовая ситуация (заезжал по делам, менял точку и т.п.) — "
+            f"напиши объяснение прямо сюда, текстом, сейчас же.\n\n"
+            f"• Если «{display_place}» на самом деле должна быть твоей постоянной территорией — "
+            f"нажми кнопку ниже, чтобы запросить её закрепление у руководителя."
         )
-        if not matches:
-            outside = True
-            register_pending_calls(db, {"territory": [tp_name]})
-            if contact_user_id:
-                combined_text = (
-                    f"📍 Валера заметил, что ты в районе «{display_place}» — это не твоя закреплённая территория.\n\n"
-                    f"• Если это разовая ситуация (заезжал по делам, менял точку и т.п.) — "
-                    f"напиши объяснение прямо сюда, текстом, сейчас же.\n\n"
-                    f"• Если «{display_place}» на самом деле должна быть твоей постоянной территорией — "
-                    f"нажми кнопку ниже, чтобы запросить её закрепление у руководителя."
-                )
-                reply_markup = None
-                if display_place:
-                    request_id = uuid.uuid4().hex[:10]
-                    db.setdefault("territory_requests", {})[request_id] = {
-                        "tp_name": tp_name, "city": display_place, "status": "pending"
-                    }
-                    reply_markup = {"inline_keyboard": [[
-                        {"text": "📍 Запросить закрепление территории", "callback_data": f"terrreq:{request_id}"}
-                    ]]}
-                send_message(combined_text, chat_id=contact_user_id, reply_markup=reply_markup)
-    return display_place, outside
+        request_id = uuid.uuid4().hex[:10]
+        db.setdefault("territory_requests", {})[request_id] = {
+            "tp_name": tp_name, "city": display_place, "status": "pending"
+        }
+        reply_markup = {"inline_keyboard": [[
+            {"text": "📍 Запросить закрепление территории", "callback_data": f"terrreq:{request_id}"}
+        ]]}
+        send_message(combined_text, chat_id=contact_user_id, reply_markup=reply_markup)
+    return display_place, "violation"
 
 def handle_checkin(msg, db):
     """Обрабатывает входящее сообщение с геолокацией от агента.
@@ -545,9 +538,10 @@ def handle_checkin(msg, db):
     point = {"lat": loc["latitude"], "lon": loc["longitude"], "ts": now_iso, "photo_file_id": None}
 
     # Проверяем территорию — не бросает исключение наружу, если геокодер недоступен
-    city, outside = resolve_and_check_territory(db, matched_key, loc["latitude"], loc["longitude"], user_id)
+    city, territory_status = resolve_and_check_territory(db, matched_key, loc["latitude"], loc["longitude"], user_id)
     point["resolved_city"] = city
-    point["outside_territory"] = outside
+    point["territory_status"] = territory_status  # "ok" | "violation" | "unknown"
+    point["outside_territory"] = (territory_status == "violation")  # для обратной совместимости с дашбордом
 
     day_points = db.setdefault("checkins", {}).setdefault(date_key, {})
     day_points.setdefault(matched_key, []).append(point)

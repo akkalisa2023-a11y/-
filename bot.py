@@ -325,6 +325,10 @@ def _reverse_geocode_yandex(lat, lon, kind=None):
             k, name = c.get("kind"), c.get("name")
             if k and name:
                 by_kind.setdefault(k, name)
+        # Логируем сырые компоненты — если снова получим только "Москва",
+        # в логах Railway будет видно ВСЁ, что реально прислал Яндекс,
+        # вместо того чтобы гадать заново вслепую.
+        logging.info(f"Yandex geocode raw components ({lat},{lon}, kind={kind}): {by_kind}")
         # От точного к общему: район → округ/area → город → область
         return [by_kind[k] for k in ("district", "area", "locality", "province") if k in by_kind]
     except Exception as e:
@@ -358,7 +362,9 @@ def reverse_geocode_location(lat, lon, zoom=14):
     для российских адресов). Если он вернул только голое название города
     (например, у шоссе/эстакады — ближайший адресный объект это трасса,
     а не жилой район) — повторяем запрос, явно попросив район. Если и
-    это не помогло — откатываемся на бесплатный OpenStreetMap Nominatim."""
+    это не дало ничего конкретнее — дополнительно пробуем бесплатный
+    OpenStreetMap, вдруг у него есть более детальные данные для этой
+    точки. Возвращаем самый детальный результат из всех попыток."""
     candidates = _reverse_geocode_yandex(lat, lon)
     is_locality_only = len(candidates) == 1  # только город/область, без района/округа
 
@@ -368,9 +374,15 @@ def reverse_geocode_location(lat, lon, zoom=14):
             candidates = precise
             is_locality_only = len(candidates) == 1
 
-    if candidates:
-        return candidates
-    return _reverse_geocode_osm(lat, lon, zoom=zoom)
+    if is_locality_only or not candidates:
+        # Яндекс не смог (или дал только общее) — пробуем OSM как ещё один шанс
+        osm_candidates = _reverse_geocode_osm(lat, lon, zoom=zoom)
+        logging.info(f"OSM fallback candidates ({lat},{lon}): {osm_candidates}")
+        if len(osm_candidates) > len(candidates):
+            candidates = osm_candidates
+
+    logging.info(f"Финальные кандидаты геокодинга ({lat},{lon}): {candidates}")
+    return candidates
 
 MOSCOW_OKRUGS = {
     "цао": "центральный административный округ",
@@ -511,13 +523,6 @@ def resolve_and_check_territory(db, tp_name, lat, lon, contact_user_id):
     прилетает никаких сообщений, дашборд просто покажет точку серым."""
     candidates = reverse_geocode_location(lat, lon, zoom=14)
     is_bare_moscow = len(candidates) == 1 and candidates[0].strip().lower() == "москва"
-
-    if is_bare_moscow:
-        # Первая попытка не дала района — пробуем точнее, прежде чем сдаться
-        precise = reverse_geocode_location(lat, lon, zoom=18)
-        if precise and not (len(precise) == 1 and precise[0].strip().lower() == "москва"):
-            candidates = precise
-            is_bare_moscow = False
 
     display_place = candidates[0] if candidates else None
 

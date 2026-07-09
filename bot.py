@@ -93,6 +93,7 @@ def load_db():
     db.setdefault("territories", {})       # {tp_name: [city1, city2, ...]} — закреплённые города
     db.setdefault("territory_requests", {})  # {request_id: {"tp_name":, "city":, "status":}}
     db.setdefault("inactive_tp", [])       # уволенные — скрыты из бота/территорий, но статистика остаётся
+    db.setdefault("vacations", {})          # {tp_name: [{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}, ...]}
     db.setdefault("tp_name_codes", {})     # {short_code: full_tp_name} — для callback_data кнопок
     return db
 
@@ -156,6 +157,16 @@ def tp_name_code(name):
 
 def today_key():
     return now_msk().strftime("%Y-%m-%d")
+
+def is_on_vacation(db, tp_name, date_str=None):
+    """Проверяет, находится ли ТП в отпуске на указанную дату (по умолчанию
+    сегодня) — по графику, заданному владельцем в '🏖️ Отпуска'."""
+    date_str = date_str or today_key()
+    ranges = db.get("vacations", {}).get(tp_name, [])
+    for r in ranges:
+        if r.get("start", "") <= date_str <= r.get("end", ""):
+            return True
+    return False
 
 def send_registration_keyboard(chat_id, db):
     """Присылает агенту список ТП кнопками — чтобы он один раз явно
@@ -261,6 +272,8 @@ def request_all_checkins():
     now_iso = now_msk().isoformat()
     sent = 0
     for tp_name, contact in contacts.items():
+        if is_on_vacation(db, tp_name, date_key):
+            continue  # в отпуске — не дёргаем
         chat_id = contact.get("id")
         if not chat_id:
             continue
@@ -646,11 +659,15 @@ def send_daily_checkin_summary():
         for tp_name in contacts.keys():
             points = checkins.get(tp_name, [])
             done = sum(1 for p in points if p.get("photo_file_id"))
-            rows.append((tp_name, done))
-        rows.sort(key=lambda x: x[1])  # худшие сверху
+            on_vac = is_on_vacation(db, tp_name, date_key)
+            rows.append((tp_name, done, on_vac))
+        rows.sort(key=lambda x: (x[2], x[1]))  # отпускники в конец, потом худшие сверху
 
         lines = [f"<b>📋 Итоги чек-инов за {date_key}</b>", ""]
-        for tp_name, done in rows:
+        for tp_name, done, on_vac in rows:
+            if on_vac:
+                lines.append(f"🏖️ {clean_tp_name(tp_name)}: в отпуске")
+                continue
             icon = "✅" if done >= expected else ("⚠️" if done > 0 else "❌")
             lines.append(f"{icon} {clean_tp_name(tp_name)}: {done}/{expected}")
 
@@ -1579,7 +1596,9 @@ def get_checkins(date):
     db = load_db()
     points  = db.get("checkins", {}).get(date, {})
     requests_ = db.get("checkin_requests", {}).get(date, {})
-    return jsonify({"date": date, "checkins": points, "requests": requests_})
+    contacts = db.get("tp_contacts", {})
+    on_vacation = [n for n in contacts.keys() if is_on_vacation(db, n, date)]
+    return jsonify({"date": date, "checkins": points, "requests": requests_, "on_vacation": on_vacation})
 
 # Прокси для фото чек-ина — не отдаём токен бота напрямую в браузер,
 # скачиваем файл от имени бота и отдаём уже готовые байты картинки
@@ -1669,6 +1688,26 @@ def remove_tp_contact():
             save_db(db)
             return jsonify({"status": "ok"})
     return jsonify({"status": "not_found"}), 404
+
+# Отпуска — график по каждому торговому, чтобы бот не дёргал его
+# запросами геолокации и не считал пропуском, пока человек отдыхает
+@app.route("/vacations", methods=["GET"])
+def get_vacations():
+    if not check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    db = load_db()
+    return jsonify(db.get("vacations", {}))
+
+@app.route("/vacations", methods=["POST"])
+def set_vacations():
+    if not check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    data = request.json or {}
+    with db_lock():
+        db = load_db()
+        db["vacations"] = data.get("vacations", {})
+        save_db(db)
+    return jsonify({"status": "ok"})
 
 # Триггер отчёта в TG (вызывается дашбордом после загрузки)
 @app.route("/send-report", methods=["POST"])

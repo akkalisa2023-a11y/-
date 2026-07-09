@@ -223,6 +223,7 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
       <button class="upload-btn" onclick="requestCheckinsNow()" style="background:rgba(74,210,134,0.1)" title="Запросить геолокацию у всех агентов прямо сейчас">📍 Запросить локации</button>
       <button class="upload-btn" onclick="openTerritoriesModal()" style="background:rgba(154,89,224,0.12);border-color:rgba(154,89,224,0.4);color:#b98cf0" title="Закрепить города за торговыми">🗺️ Территории</button>
       <button class="upload-btn" onclick="openContactsModal()" style="background:rgba(41,171,226,0.12);border-color:rgba(41,171,226,0.4);color:#29abe2" title="Кто реально зарегистрирован в боте">👥 Контакты</button>
+      <button class="upload-btn" onclick="openVacationsModal()" style="background:rgba(255,180,60,0.12);border-color:rgba(255,180,60,0.4);color:#ffb43c" title="График отпусков по торговым">🏖️ Отпуска</button>
       <button class="upload-btn" onclick="lockAdmin()" title="Скрыть кнопки загрузки на этом устройстве" style="padding:6px 10px">🔓</button>
     </div>
     <button id="admin-unlock-btn" class="upload-btn" onclick="unlockAdmin()" style="padding:6px 10px" title="Загрузка данных доступна только администратору">🔒</button>
@@ -270,6 +271,16 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
     <div style="font-size:11px;color:var(--text3);margin-bottom:14px">Кто реально написал боту и выбрал себя из списка (может получать чек-ины и разборы). Если видите ошибочную привязку — уберите её, человеку нужно будет заново нажать /start.</div>
     <div id="contacts-list" style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:6px;margin-bottom:12px"></div>
     <button onclick="document.getElementById('contacts-modal').style.display='none'"
+      style="padding:8px;background:transparent;color:var(--text3);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-family:inherit">Закрыть</button>
+  </div>
+</div>
+
+<div id="vacations-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:200;align-items:center;justify-content:center">
+  <div style="background:var(--card);border:1px solid var(--border2);border-radius:var(--radius);padding:24px;width:520px;max-width:90vw;max-height:82vh;display:flex;flex-direction:column">
+    <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:6px">🏖️ Отпуска торговых</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:14px">Пока торговый в отпуске — бот не присылает ему запросы геолокации, и в сводах он не считается пропустившим. На эффективность/активации не влияет.</div>
+    <div id="vacations-list" style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:10px;margin-bottom:12px"></div>
+    <button onclick="document.getElementById('vacations-modal').style.display='none'"
       style="padding:8px;background:transparent;color:var(--text3);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-family:inherit">Закрыть</button>
   </div>
 </div>
@@ -1355,20 +1366,23 @@ function applyMapFilter(){
     const resetChip = _selectedAgent
       ? `<span class="ci-chip" style="cursor:pointer" onclick="showAllAgents()">↺ Показать всех</span>`
       : '';
+    const onVacation = new Set(_lastCheckinsData.on_vacation || []);
     legendEl.innerHTML = resetChip + [...allNames].map(name => {
       const hasCheckin = (checkins[name]||[]).length > 0;
       const reqInfo = reqs[name];
-      const missed = reqInfo && !reqInfo.responded && !hasCheckin;
+      const isVacation = onVacation.has(name);
+      const missed = !isVacation && reqInfo && !reqInfo.responded && !hasCheckin;
       const hasViolation = (checkins[name]||[]).some(p => (p.territory_status||(p.outside_territory?'violation':'ok')) === 'violation');
       const hasUnknown = (checkins[name]||[]).some(p => (p.territory_status||'ok') === 'unknown');
       const colorIdx = allNamesFull.indexOf(name);
       const dotColor = colorIdx >= 0 ? MAP_COLORS[colorIdx % MAP_COLORS.length] : 'var(--text3)';
-      const cls = missed ? 'ci-missed' : '';
-      const icon = missed ? '✕' : '✓';
+      const cls = isVacation ? '' : (missed ? 'ci-missed' : '');
+      const icon = isVacation ? '🏖️' : (missed ? '✕' : '✓');
       const warnBadge = hasViolation ? ' <span title="Есть отметка вне территории">⚠️</span>' : '';
       const unknownBadge = hasUnknown ? ' <span title="Есть отметка с неопределённым местом (не вина агента)" style="opacity:.6">◌</span>' : '';
       const selCls = (_selectedAgent === name) ? ' selected' : '';
-      return `<span class="ci-chip ${cls}${selCls}" style="cursor:pointer" onclick="selectAgent('${name}')" title="Показать только этого агента">
+      const styleExtra = isVacation ? 'opacity:.7' : '';
+      return `<span class="ci-chip ${cls}${selCls}" style="cursor:pointer;${styleExtra}" onclick="selectAgent('${name}')" title="${isVacation?'В отпуске':'Показать только этого агента'}">
         <span class="ci-dot" style="background:${dotColor};color:${dotColor}"></span>${icon} ${dispName(name)}${warnBadge}${unknownBadge}
       </span>`;
     }).join('');
@@ -1492,6 +1506,89 @@ async function removeContact(encodedName) {
     } else {
       toast('❌ Не удалось убрать привязку');
     }
+  } catch(e) {
+    toast('❌ Ошибка: ' + e.message);
+  }
+}
+
+let _vacationsCache = {};
+
+async function openVacationsModal() {
+  if (!BOT_URL) { toast('⚠️ Бот не настроен'); return; }
+  const modal = document.getElementById('vacations-modal');
+  const listEl = document.getElementById('vacations-list');
+  listEl.innerHTML = '<span style="font-size:12px;color:var(--text3)">Загрузка...</span>';
+  modal.style.display = 'flex';
+
+  const secret = localStorage.getItem('as_api_secret') || 'as_secret_2026';
+  const allNames = getAllTpNamesFromDb();
+  try {
+    const r = await fetch(`${BOT_URL}/vacations`, { headers: {'X-API-Secret': secret} });
+    _vacationsCache = await r.json();
+  } catch(e) {
+    _vacationsCache = {};
+  }
+  renderVacationsList(allNames);
+}
+
+function renderVacationsList(allNames) {
+  const listEl = document.getElementById('vacations-list');
+  listEl.innerHTML = allNames.map(name => {
+    const ranges = _vacationsCache[name] || [];
+    const safeId = 'vac-' + btoa(unescape(encodeURIComponent(name))).replace(/[^a-zA-Z0-9]/g,'');
+    const rangesHtml = ranges.length ? ranges.map((r,i) => `
+      <span class="ci-chip" style="cursor:default">
+        📅 ${r.start} – ${r.end}
+        <span onclick="removeVacationRange('${encodeURIComponent(name)}', ${i})" style="cursor:pointer;color:var(--red);margin-left:4px" title="Убрать">✕</span>
+      </span>`).join('') : '<span style="font-size:11px;color:var(--text3)">Нет запланированных отпусков</span>';
+    return `<div style="padding:10px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm)">
+      <div style="font-size:12.5px;color:var(--text);font-weight:500;margin-bottom:6px">${dispName(name)}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">${rangesHtml}</div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <input type="date" id="${safeId}-start" style="padding:5px 8px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:11px;font-family:inherit">
+        <span style="color:var(--text3);font-size:11px">—</span>
+        <input type="date" id="${safeId}-end" style="padding:5px 8px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:11px;font-family:inherit">
+        <button onclick="addVacationRange('${encodeURIComponent(name)}', '${safeId}')"
+          style="padding:5px 10px;background:rgba(255,180,60,0.15);border:1px solid rgba(255,180,60,0.4);color:#ffb43c;border-radius:6px;cursor:pointer;font-size:11px;font-family:inherit;white-space:nowrap">+ Добавить</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function addVacationRange(encodedName, safeId) {
+  const name = decodeURIComponent(encodedName);
+  const start = document.getElementById(`${safeId}-start`).value;
+  const end = document.getElementById(`${safeId}-end`).value;
+  if (!start || !end) { toast('⚠️ Укажите обе даты'); return; }
+  if (end < start) { toast('⚠️ Дата окончания раньше начала'); return; }
+  if (!_vacationsCache[name]) _vacationsCache[name] = [];
+  _vacationsCache[name].push({start, end});
+  await saveVacationsToServer();
+  const allNames = getAllTpNamesFromDb();
+  renderVacationsList(allNames);
+}
+
+async function removeVacationRange(encodedName, idx) {
+  const name = decodeURIComponent(encodedName);
+  if (_vacationsCache[name]) {
+    _vacationsCache[name].splice(idx, 1);
+    if (!_vacationsCache[name].length) delete _vacationsCache[name];
+  }
+  await saveVacationsToServer();
+  const allNames = getAllTpNamesFromDb();
+  renderVacationsList(allNames);
+}
+
+async function saveVacationsToServer() {
+  const secret = localStorage.getItem('as_api_secret') || 'as_secret_2026';
+  try {
+    const r = await fetch(`${BOT_URL}/vacations`, {
+      method: 'POST', headers: {'Content-Type':'application/json','X-API-Secret': secret},
+      body: JSON.stringify({vacations: _vacationsCache})
+    });
+    const res = await r.json();
+    if (res.status === 'ok') toast('✅ Сохранено');
+    else toast('❌ Не удалось сохранить');
   } catch(e) {
     toast('❌ Ошибка: ' + e.message);
   }

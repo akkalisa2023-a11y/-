@@ -297,22 +297,24 @@ def tp_name_for_user(user_id, db):
 
 YANDEX_GEOCODER_KEY = os.environ.get("YANDEX_GEOCODER_KEY", "3f602451-361b-4835-b80b-f2e0602fe739")
 
-def _reverse_geocode_yandex(lat, lon):
+def _reverse_geocode_yandex(lat, lon, kind=None):
     """Обратное геокодирование через Яндекс — точнее для российских
     адресов, особенно внутри Москвы (собственные детальные карты).
     Важно: у Яндекса координаты в запросе идут в порядке lon,lat,
-    в отличие от большинства других сервисов."""
+    в отличие от большинства других сервисов.
+    kind='district' явно просит именно район/округ, а не ближайший
+    адресный объект — иначе для точек у шоссе/эстакад Яндекс отдаёт
+    саму трассу вместо жилого района."""
     try:
-        r = requests.get(
-            "https://geocode-maps.yandex.ru/1.x/",
-            params={
-                "apikey": YANDEX_GEOCODER_KEY,
-                "format": "json",
-                "geocode": f"{lon},{lat}",
-                "results": 1,
-            },
-            timeout=10
-        )
+        params = {
+            "apikey": YANDEX_GEOCODER_KEY,
+            "format": "json",
+            "geocode": f"{lon},{lat}",
+            "results": 1,
+        }
+        if kind:
+            params["kind"] = kind
+        r = requests.get("https://geocode-maps.yandex.ru/1.x/", params=params, timeout=10)
         data = r.json()
         members = data.get("response", {}).get("GeoObjectCollection", {}).get("featureMember", [])
         if not members:
@@ -320,9 +322,9 @@ def _reverse_geocode_yandex(lat, lon):
         components = members[0]["GeoObject"]["metaDataProperty"]["GeocoderMetaData"]["Address"]["Components"]
         by_kind = {}
         for c in components:
-            kind, name = c.get("kind"), c.get("name")
-            if kind and name:
-                by_kind.setdefault(kind, name)
+            k, name = c.get("kind"), c.get("name")
+            if k and name:
+                by_kind.setdefault(k, name)
         # От точного к общему: район → округ/area → город → область
         return [by_kind[k] for k in ("district", "area", "locality", "province") if k in by_kind]
     except Exception as e:
@@ -353,9 +355,19 @@ def _reverse_geocode_osm(lat, lon, zoom=14):
 
 def reverse_geocode_location(lat, lon, zoom=14):
     """Определяет место чек-ина — сначала пробуем геокодер Яндекса (точнее
-    для российских адресов), и только если он ничего не вернул —
-    откатываемся на бесплатный OpenStreetMap Nominatim."""
+    для российских адресов). Если он вернул только голое название города
+    (например, у шоссе/эстакады — ближайший адресный объект это трасса,
+    а не жилой район) — повторяем запрос, явно попросив район. Если и
+    это не помогло — откатываемся на бесплатный OpenStreetMap Nominatim."""
     candidates = _reverse_geocode_yandex(lat, lon)
+    is_locality_only = len(candidates) == 1  # только город/область, без района/округа
+
+    if is_locality_only:
+        precise = _reverse_geocode_yandex(lat, lon, kind="district")
+        if precise:
+            candidates = precise
+            is_locality_only = len(candidates) == 1
+
     if candidates:
         return candidates
     return _reverse_geocode_osm(lat, lon, zoom=zoom)

@@ -298,13 +298,16 @@ def tp_name_for_user(user_id, db):
 YANDEX_GEOCODER_KEY = os.environ.get("YANDEX_GEOCODER_KEY", "3f602451-361b-4835-b80b-f2e0602fe739")
 
 def _reverse_geocode_yandex(lat, lon, kind=None):
-    """Обратное геокодирование через Яндекс — точнее для российских
-    адресов, особенно внутри Москвы (собственные детальные карты).
-    Важно: у Яндекса координаты в запросе идут в порядке lon,lat,
-    в отличие от большинства других сервисов.
-    kind='district' явно просит именно район/округ, а не ближайший
-    адресный объект — иначе для точек у шоссе/эстакад Яндекс отдаёт
-    саму трассу вместо жилого района."""
+    """Обратное геокодирование через Яндекс. Важно: у Яндекса координаты
+    в запросе идут в порядке lon,lat, в отличие от большинства сервисов.
+
+    ВАЖНЫЙ НЮАНС (выяснено по логам): поле 'province' у Яндекса для
+    Москвы — это не округ города (ЦАО/САО), а федеральный округ России
+    ("Центральный федеральный округ" — вся центральная Россия целиком!).
+    Настоящего района/округа Москвы Яндекс для многих точек вообще не
+    возвращает — только страна → федеральный округ → город → улица.
+    Поэтому 'province' сюда не включаем — только district/area/locality,
+    и отдельно сообщаем, нашёлся ли реально районный уровень."""
     try:
         params = {
             "apikey": YANDEX_GEOCODER_KEY,
@@ -318,22 +321,21 @@ def _reverse_geocode_yandex(lat, lon, kind=None):
         data = r.json()
         members = data.get("response", {}).get("GeoObjectCollection", {}).get("featureMember", [])
         if not members:
-            return []
+            return [], False
         components = members[0]["GeoObject"]["metaDataProperty"]["GeocoderMetaData"]["Address"]["Components"]
         by_kind = {}
         for c in components:
             k, name = c.get("kind"), c.get("name")
             if k and name:
                 by_kind.setdefault(k, name)
-        # Логируем сырые компоненты — если снова получим только "Москва",
-        # в логах Railway будет видно ВСЁ, что реально прислал Яндекс,
-        # вместо того чтобы гадать заново вслепую.
         logging.info(f"Yandex geocode raw components ({lat},{lon}, kind={kind}): {by_kind}")
-        # От точного к общему: район → округ/area → город → область
-        return [by_kind[k] for k in ("district", "area", "locality", "province") if k in by_kind]
+        has_district_level = "district" in by_kind or "area" in by_kind
+        # 'province' намеренно не включаем — это федеральный округ, а не городской
+        candidates = [by_kind[k] for k in ("district", "area", "locality") if k in by_kind]
+        return candidates, has_district_level
     except Exception as e:
         logging.error(f"_reverse_geocode_yandex error: {e}")
-        return []
+        return [], False
 
 def _reverse_geocode_osm(lat, lon, zoom=14):
     """Бесплатный обратный геокодер OpenStreetMap Nominatim — резервный
@@ -358,28 +360,25 @@ def _reverse_geocode_osm(lat, lon, zoom=14):
         return []
 
 def reverse_geocode_location(lat, lon, zoom=14):
-    """Определяет место чек-ина — сначала пробуем геокодер Яндекса (точнее
-    для российских адресов). Если он вернул только голое название города
-    (например, у шоссе/эстакады — ближайший адресный объект это трасса,
-    а не жилой район) — повторяем запрос, явно попросив район. Если и
-    это не дало ничего конкретнее — дополнительно пробуем бесплатный
-    OpenStreetMap, вдруг у него есть более детальные данные для этой
-    точки. Возвращаем самый детальный результат из всех попыток."""
-    candidates = _reverse_geocode_yandex(lat, lon)
-    is_locality_only = len(candidates) == 1  # только город/область, без района/округа
+    """Определяет место чек-ина — сначала пробуем геокодер Яндекса.
+    ВАЖНО: для многих точек внутри Москвы Яндекс вообще не даёт
+    районный/окружной уровень (см. комментарий в _reverse_geocode_yandex) —
+    тогда доверять его "Москва" нельзя, сразу подключаем бесплатный
+    OpenStreetMap, у которого есть city_district/suburb для Москвы."""
+    candidates, has_district = _reverse_geocode_yandex(lat, lon)
 
-    if is_locality_only:
-        precise = _reverse_geocode_yandex(lat, lon, kind="district")
-        if precise:
+    if not has_district:
+        precise, has_district2 = _reverse_geocode_yandex(lat, lon, kind="district")
+        if has_district2:
             candidates = precise
-            is_locality_only = len(candidates) == 1
+            has_district = True
 
-    if is_locality_only or not candidates:
-        # Яндекс не смог (или дал только общее) — пробуем OSM как ещё один шанс
+    if not has_district:
+        # Яндекс не дал районного уровня — пробуем OSM, у него это часто есть
         osm_candidates = _reverse_geocode_osm(lat, lon, zoom=zoom)
         logging.info(f"OSM fallback candidates ({lat},{lon}): {osm_candidates}")
-        if len(osm_candidates) > len(candidates):
-            candidates = osm_candidates
+        if osm_candidates:
+            candidates = osm_candidates  # предпочитаем OSM, если он дал хоть что-то
 
     logging.info(f"Финальные кандидаты геокодинга ({lat},{lon}): {candidates}")
     return candidates

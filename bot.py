@@ -598,9 +598,15 @@ def handle_checkin(msg, db):
     # Ждём фото следующим сообщением — чек-ин пока не считается отвеченным.
     # Очередь (список), а не одна запись — если агент отметится второй раз
     # до того, как пришлёт фото за первый, обе отметки не потеряются.
-    db.setdefault("awaiting_photo", {}).setdefault(str(user_id), []).append({
-        "date": date_key, "name": matched_key, "idx": point_idx
-    })
+    # Заодно чистим записи не за сегодня — застрявший мусор из старых
+    # версий кода не должен накапливаться и мешать сегодняшним чек-инам.
+    awaiting_all = db.setdefault("awaiting_photo", {})
+    prev_raw = awaiting_all.get(str(user_id)) or []
+    if isinstance(prev_raw, dict):
+        prev_raw = [prev_raw]  # старый формат до обновления — подстраховка
+    user_queue = [item for item in prev_raw if item.get("date") == date_key]
+    user_queue.append({"date": date_key, "name": matched_key, "idx": point_idx})
+    awaiting_all[str(user_id)] = user_queue
 
     save_db(db)
     send_message(
@@ -612,16 +618,25 @@ def handle_checkin(msg, db):
 
 def handle_checkin_photo(msg, db):
     """Обрабатывает фото, присланное следом за геолокацией — довершает чек-ин.
-    Если у агента накопилось несколько ожидающих фото (отметился не раз
-    подряд) — фото уходит на самую раннюю из них (FIFO), по порядку."""
+    Берём только записи ЗА СЕГОДНЯ — если в очереди случайно застряла
+    старая запись с прошлых дней (например, из-за ошибки в старой версии
+    кода), она молча отбрасывается, а не перехватывает свежее фото."""
     from_user = msg.get("from", {})
     user_id = str(from_user.get("id", ""))
     awaiting = db.get("awaiting_photo", {})
-    queue = awaiting.get(user_id) or []
-    if isinstance(queue, dict):
-        queue = [queue]  # старый формат до обновления (одна запись, не список) — подстраховка
+    raw_queue = awaiting.get(user_id) or []
+    if isinstance(raw_queue, dict):
+        raw_queue = [raw_queue]  # старый формат до обновления (одна запись, не список) — подстраховка
+
+    today = today_key()
+    queue = [item for item in raw_queue if item.get("date") == today]
+    stale_count = len(raw_queue) - len(queue)
+    if stale_count:
+        logging.info(f"handle_checkin_photo: отброшено {stale_count} устаревших записей ожидания для {user_id}")
 
     if not queue:
+        if user_id in awaiting:
+            del awaiting[user_id]  # чистим и устаревшие, раз уж дошли до сюда
         send_message(
             "📷 Фото получил, но сейчас не жду его от тебя — сначала нажми кнопку локации, если это был чек-ин.",
             chat_id=int(user_id) if user_id.isdigit() else user_id
@@ -633,9 +648,11 @@ def handle_checkin_photo(msg, db):
         return
     file_id = photo_sizes[-1]["file_id"]  # последний элемент — самое большое разрешение
 
-    pending_info = queue.pop(0)  # самая ранняя ожидающая отметка
-    if not queue:
-        del awaiting[user_id]
+    pending_info = queue.pop(0)  # самая ранняя СЕГОДНЯШНЯЯ ожидающая отметка
+    if queue:
+        awaiting[user_id] = queue  # оставшиеся сегодняшние — обратно в очередь
+    else:
+        del awaiting[user_id]  # всё разобрано (устаревшие уже отброшены выше)
 
     date_key = pending_info["date"]
     name     = pending_info["name"]

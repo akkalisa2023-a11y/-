@@ -36,6 +36,9 @@ REMINDER_HOURS = float(os.environ.get("REMINDER_HOURS", "2"))
 
 # Во сколько часов (по времени сервера) слать запрос геолокации агентам, через запятую
 CHECKIN_HOURS = os.environ.get("CHECKIN_HOURS", "10,13,16,18")
+# Дни недели для чек-инов — по умолчанию будни (пн-пт), без выходных.
+# Формат APScheduler: mon,tue,wed,thu,fri,sat,sun или диапазоны "mon-fri"
+CHECKIN_WORKDAYS = os.environ.get("CHECKIN_WORKDAYS", "mon-fri")
 # Через сколько минут после запроса считать чек-ин пропущенным
 CHECKIN_TIMEOUT_MIN = int(os.environ.get("CHECKIN_TIMEOUT_MIN", "30"))
 # Во сколько часов присылать владельцу итоговый свод за день (после последнего
@@ -1882,16 +1885,17 @@ setup_webhook()
 _scheduler = BackgroundScheduler(timezone=MOSCOW_TZ)
 _scheduler.add_job(check_reminders, "interval", minutes=15, id="valera_reminders")
 
-# Автоматическая рассылка запроса геолокации в заданные часы (CHECKIN_HOURS)
+# Автоматическая рассылка запроса геолокации в заданные часы (CHECKIN_HOURS),
+# только по будням — по выходным у ребят законный отдых, дёргать не нужно
 _scheduler.add_job(
     request_all_checkins, "cron",
-    hour=CHECKIN_HOURS, minute=0, id="checkin_requests"
+    day_of_week=CHECKIN_WORKDAYS, hour=CHECKIN_HOURS, minute=0, id="checkin_requests"
 )
 # Проверка пропущенных чек-инов
 _scheduler.add_job(check_missed_checkins, "interval", minutes=10, id="checkin_missed")
 _scheduler.add_job(
     send_daily_checkin_summary, "cron",
-    hour=DAILY_SUMMARY_HOUR, minute=0, id="daily_checkin_summary"
+    day_of_week=CHECKIN_WORKDAYS, hour=DAILY_SUMMARY_HOUR, minute=0, id="daily_checkin_summary"
 )
 
 _scheduler.start()

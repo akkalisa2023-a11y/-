@@ -607,7 +607,7 @@ function processActivations(headers, rows){
              fraud:tp.fraud,fraud_pct:fp};
     }).sort((a,b)=>b.acts-a.acts);
     const prList=Object.values(prMap).map(p=>({...p,fraud_pct:p.acts?+(p.fraud/p.acts*100).toFixed(1):0}))
-                  .sort((a,b)=>b.acts-a.acts).slice(0,80);
+                  .sort((a,b)=>b.acts-a.acts);
     const actsByR={};acts.forEach(a=>{actsByR[a.r]=(actsByR[a.r]||0)+1;});
     const vals=Object.values(actsByR);
     const ft=acts.filter(a=>a.fraud).length;

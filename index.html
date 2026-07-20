@@ -649,6 +649,7 @@ function processPrivl(headers,rows){
   const iN=colIdx(headers,'Имя сотрудника создавшего');
   const iT=colIdx(headers,'Как создан');
   const iD=colIdx(headers,'Дата создания');
+  const iU=colIdx(headers,'Имя пользователя');
   if(iN<0||iT<0){
     toast(`❌ Не найдены столбцы привлечения`);
     return;
@@ -657,6 +658,7 @@ function processPrivl(headers,rows){
   // Группируем по месяцам через "Дата создания"
   // Перезаписываем ТОЛЬКО те месяцы что есть в файле — остальные не трогаем
   const byMonth={};
+  const subdealers=[]; // {torgovy, name} — для уведомлений о новых субдилерах
   rows.forEach(r=>{
     const n=String(r[iN]||'').trim();
     const t=String(r[iT]||'').trim();
@@ -667,7 +669,11 @@ function processPrivl(headers,rows){
     if(!byMonth[m][n]) byMonth[m][n]={n,v:0,u:0,s:0};
     byMonth[m][n].v++;
     if(t==='Уникальный') byMonth[m][n].u++;
-    if(t==='Субдилер') byMonth[m][n].s++;
+    if(t==='Субдилер') {
+      byMonth[m][n].s++;
+      const userName = iU>=0 ? String(r[iU]||'').trim() : '';
+      if(userName) subdealers.push({torgovy: n, name: userName});
+    }
   });
 
   const stored=JSON.parse(localStorage.getItem('as_dash_v4'));
@@ -697,6 +703,7 @@ function processPrivl(headers,rows){
   DB=stored;
   toast(`✅ Привлечение: обновлено ${updatedMonths.length} мес. (${updatedMonths.map(fmtM).join(', ')})`);
   if(BOT_URL) pushPrivlToServer(stored.privl_months);
+  if(BOT_URL && subdealers.length) pushSubdealersToServer(subdealers);
   if(document.getElementById('tat').style.display!=='none'){
     renderPrivlMonthBtns();
     renderPrivl();
@@ -1764,6 +1771,20 @@ async function pushToServerAndNotify(byM) {
       toast('✈️ Данные на сервере обновлены, отчёт отправлен в Telegram!');
     } catch(e) { toast('⚠️ Данные залиты, но TG не ответил'); }
   }
+}
+
+async function pushSubdealersToServer(subdealers) {
+  const secret = localStorage.getItem('as_api_secret') || 'as_secret_2026';
+  try {
+    const r = await fetch(BOT_URL + '/new-subdealers', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','X-API-Secret': secret},
+      body: JSON.stringify({subdealers})
+    });
+    const res = await r.json();
+    if (res.notified) toast(`📨 Уведомлено о новых субдилерах: ${res.notified}`);
+    console.log('Subdealers pushed to server:', subdealers.length, res);
+  } catch(e) { console.error('Subdealers push error:', e); }
 }
 
 async function pushPrivlToServer(privlMonths) {

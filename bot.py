@@ -97,6 +97,7 @@ def load_db():
     db.setdefault("territory_requests", {})  # {request_id: {"tp_name":, "city":, "status":}}
     db.setdefault("inactive_tp", [])       # уволенные — скрыты из бота/территорий, но статистика остаётся
     db.setdefault("vacations", {})          # {tp_name: [{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}, ...]}
+    db.setdefault("seen_subdealers", [])    # ["торговый|||имя_субдилера", ...] — кому уже сообщили
     db.setdefault("tp_name_codes", {})     # {short_code: full_tp_name} — для callback_data кнопок
     return db
 
@@ -1615,6 +1616,46 @@ def upload_privl():
         db["privl_total"] = payload.get("privl_total", {})
     save_db(db)
     return jsonify({"status": "ok", "months": list(privl_months.keys()) or ["legacy"]})
+
+# Новые субдилеры — уведомляем торгового лично (от Валеры), только про тех,
+# о ком ещё не сообщали раньше (дедупликация по имени торгового + субдилера)
+@app.route("/new-subdealers", methods=["POST"])
+def new_subdealers():
+    if not check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    payload = request.json or {}
+    incoming = payload.get("subdealers", [])
+    notified = 0
+    with db_lock():
+        db = load_db()
+        seen = set(db.setdefault("seen_subdealers", []))
+        contacts = db.get("tp_contacts", {})
+        for item in incoming:
+            torgovy = (item.get("torgovy") or "").strip()
+            name = (item.get("name") or "").strip()
+            if not torgovy or not name:
+                continue
+            key = f"{torgovy}|||{name}"
+            if key in seen:
+                continue
+            seen.add(key)
+
+            contact = contacts.get(torgovy)
+            if not contact:
+                # Точного совпадения имени нет — пробуем как обычно, по частичному имени
+                matched = match_tp_name(torgovy, contacts.keys())
+                contact = contacts.get(matched) if matched else None
+
+            if contact and contact.get("id"):
+                send_message(
+                    f"🆕 Валера сообщает: у тебя новый субдилер — <b>{name}</b>. Свяжись с ним!",
+                    chat_id=contact["id"]
+                )
+                notified += 1
+
+        db["seen_subdealers"] = list(seen)
+        save_db(db)
+    return jsonify({"status": "ok", "received": len(incoming), "notified": notified})
 
 # Ручной запуск рассылки запроса геолокации (кнопка на дашборде, помимо расписания)
 @app.route("/checkin/request", methods=["POST"])

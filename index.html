@@ -533,7 +533,23 @@ async function loadFile(input,type){
   const ab=await file.arrayBuffer();
   const wb=XLSX.read(ab);
   const ws=wb.Sheets[wb.SheetNames[0]];
-  const rows=XLSX.utils.sheet_to_json(ws,{header:1});
+  let rows=XLSX.utils.sheet_to_json(ws,{header:1});
+  // Некоторые выгрузки Excel содержат "раздутый" диапазон — форматирование
+  // растянуто на сотни тысяч пустых строк сверх реальных данных. Обрезаем
+  // хвост из полностью пустых строк, чтобы не гонять обработку впустую
+  // и не рисковать зависанием/сбоем на огромном массиве.
+  let lastNonEmpty = -1;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = rows[i];
+    if (row && row.length && row.some(c => c !== undefined && c !== null && c !== '')) {
+      lastNonEmpty = i;
+      break;
+    }
+  }
+  if (lastNonEmpty >= 0 && lastNonEmpty < rows.length - 1) {
+    console.log(`Обрезан раздутый диапазон: было ${rows.length} строк, реальных данных до строки ${lastNonEmpty}`);
+    rows = rows.slice(0, lastNonEmpty + 1);
+  }
   if(type==='act') processActivations(rows[0], rows.slice(1));
   else processPrivl(rows[0], rows.slice(1));
   input.value='';

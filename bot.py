@@ -1026,8 +1026,16 @@ PRIVL_RANTS = [
     "{name}! Валера смотрит на привлечение: {count} всего, уникальных {uniq}. Где новые партнёры?! 😤",
     "{name}, {count} привлечений за месяц — это серьёзно мало! Валера ожидал большего от тебя! 📊",
     "Слушай {name}, {uniq} уникальных — клиентская база не растёт! Валера не доволен! 🔻",
-    "{name}! Одни субдилеры! {uniq} уникальных из {count}. Валера хочет видеть новые лица в базе! 👥",
 ]
+# Этот вариант правдив, только если субдилеры реально есть, и они не единственный
+# вид привлечения — иначе получается абсурд вида "Одни субдилеры!" при 0 из 0
+PRIVL_RANT_SUBDEALERS_ONLY = "{name}! Одни субдилеры! {uniq} уникальных из {count}. Валера хочет видеть новые лица в базе! 👥"
+
+def pick_privl_rant(name, count, uniq, subs):
+    candidates = list(PRIVL_RANTS)
+    if subs > 0 and uniq < count:
+        candidates.append(PRIVL_RANT_SUBDEALERS_ONLY)
+    return random.choice(candidates).format(name=name, count=count, uniq=uniq)
 
 VALERA_VACATION = [
     "😌 Фёдор изучил отчёт...\n✅ Цифры в норме...\n🏖️ <b>Валера сегодня в отпуске!</b>\n\nВсё чисто, команда! Фёдор доволен. Так держать! 💚",
@@ -1212,7 +1220,7 @@ def get_privl_offenders(tp_list, privl, threshold_count=3, threshold_uniq=2):
                 pm = v
                 break
         if pm is None:
-            pm = {'v': 0, 'u': 0}  # нет записей вообще — значит буквально ноль привлечений
+            pm = {'v': 0, 'u': 0, 's': 0}  # нет записей вообще — значит буквально ноль привлечений
         if pm['v'] <= threshold_count or pm['u'] <= threshold_uniq:
             offenders.append({**t, 'privl': pm})
     return offenders
@@ -1234,11 +1242,7 @@ def build_privl_callout(tp_list, privl, threshold_count=3, threshold_uniq=2, sho
     for tp in sorted(offenders, key=lambda x: (x['privl']['v'], x['privl']['u']))[:5]:
         name = mention_for(tp['name'], contacts)
         pm = tp['privl']
-        rant = random.choice(PRIVL_RANTS).format(
-            name=name,
-            count=pm['v'],
-            uniq=pm['u']
-        )
+        rant = pick_privl_rant(name, pm['v'], pm['u'], pm.get('s', 0))
         lines.append(f"👆 {rant}")
         lines.append("")
 

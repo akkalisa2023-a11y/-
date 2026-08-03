@@ -852,14 +852,16 @@ def build_insights(data):
             insights.append(f"⚡ {top_name} даёт {top_share}% всех активаций — высокая зависимость от одного ТП")
     return insights
 
-def build_report(data, month_label):
+def build_report(data, month_label, is_final=False):
     d       = data["current"]
     prev    = data.get("prev")
     tp_list = d.get("tp", [])
     now     = now_msk().strftime("%d.%m.%Y %H:%M")
 
+    header_emoji = "🏁" if is_final else "📊"
+    header_word  = "ИТОГИ" if is_final else "Отчёт за"
     lines = [
-        f"<b>📊 АС — Отчёт за {month_label}</b>",
+        f"<b>{header_emoji} АС — {header_word} {month_label}</b>",
         f"<i>Обновлено: {now}</i>", "",
     ]
 
@@ -877,16 +879,18 @@ def build_report(data, month_label):
         diff  = total - prev.get("total", 0)
         trend = f" {'📈 +' if diff >= 0 else '📉 '}{diff} vs пред. мес."
 
-    # Прогноз
+    # Прогноз / итог
     forecast_str = ""
-    if forecast and last_date:
+    if is_final:
+        forecast_str = f"\n🏁 <b>Итог месяца:</b> {total:,} акт. (месяц закрыт)".replace(",", " ")
+    elif forecast and last_date:
         day = int(last_date.split("-")[2]) if last_date else 0
         pct = round(total/forecast*100) if forecast else 0
         forecast_str = f"\n📈 <b>Прогноз на месяц:</b> {forecast:,} акт. (факт по {day}-е — {pct}% выполнения)".replace(",", " ")
 
     lines += [
         "━━━━━━━━━━━━━━━━━━━━",
-        f"⚡ <b>Активаций:</b> {total:,}{trend}".replace(",", " "),
+        f"⚡ <b>Активаций:</b> {total:,}{trend}".replace(",", " ") + forecast_str,
         f"👥 <b>Партнёров активных:</b> {ap}",
         f"🟢 <b>3+ продаж:</b> {p3}  |  🥇 <b>10+ продаж:</b> {p10}",
     ]
@@ -1583,11 +1587,6 @@ def upload_activations():
         return jsonify({"error": "month and data required"}), 400
 
     db      = load_db()
-    today   = now_msk()
-    cur_m   = f"{today.year}-{str(today.month).zfill(2)}"
-
-    if month in db["months"] and month != cur_m:
-        return jsonify({"status": "skipped", "reason": "closed month", "month": month})
 
     db["months"][month] = data
     save_db(db)
@@ -1815,6 +1814,13 @@ def send_report():
             return names[int(mo)] + " " + y
         month_label = fmt_month(cur_key)
 
+        # Если залитый месяц уже не текущий календарный — значит это
+        # заливка "постфактум" (например, 1-2 числа следующего месяца
+        # добивают итоги предыдущего), и отчёт стоит подать как ИТОГИ
+        # месяца, а не как промежуточный прогноз/факт-на-число.
+        real_cur_m = f"{now_msk().year}-{str(now_msk().month).zfill(2)}"
+        is_final_month = cur_key != real_cur_m
+
         def privl_for_month(month_key):
             """Привлечение строго за тот же месяц, что и активации в отчёте —
             а не просто 'последний когда-либо залитый месяц привлечения',
@@ -1832,7 +1838,7 @@ def send_report():
             "prev":       months[prev_key] if prev_key else None,
             "efficiency": eff[:5]
         }
-        text   = build_report(data, month_label)
+        text   = build_report(data, month_label, is_final=is_final_month)
         result = send_message(text)
         logging.info(f"TG report sent: {result.get('ok')}")
 

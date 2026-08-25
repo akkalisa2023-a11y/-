@@ -648,6 +648,18 @@ def handle_reactivation_tp_response_callback(callback_query):
         answer_callback_query(cq_id, "Запись не найдена (возможно, устарела)")
         return
 
+    message = callback_query.get("message", {}) or {}
+    msg_chat_id = (message.get("chat", {}) or {}).get("id")
+    msg_id = message.get("message_id")
+
+    # Финальное решение (договорился/отказ) менять больше нельзя —
+    # только "ещё в работе" было промежуточным статусом.
+    if req.get("status") in ("tp_agreed", "tp_declined"):
+        answer_callback_query(cq_id, "Решение уже зафиксировано, изменить нельзя")
+        if msg_chat_id and msg_id:
+            clear_inline_keyboard(msg_chat_id, msg_id)
+        return
+
     partner = req["partner"]
     tp_display = clean_tp_name(req["tp"])
 
@@ -655,6 +667,8 @@ def handle_reactivation_tp_response_callback(callback_query):
         req["status"] = "tp_agreed"
         answer_callback_query(cq_id, "Отметил — договорился!")
         save_db(db)
+        if msg_chat_id and msg_id:
+            clear_inline_keyboard(msg_chat_id, msg_id)
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         payload = {
             "chat_id": OWNER_ID,
@@ -671,6 +685,8 @@ def handle_reactivation_tp_response_callback(callback_query):
         req["status"] = "tp_declined"
         answer_callback_query(cq_id, "Отметил отказ")
         save_db(db)
+        if msg_chat_id and msg_id:
+            clear_inline_keyboard(msg_chat_id, msg_id)
         send_message(f"❌ <b>{tp_display}</b> → {partner}: отказ.", chat_id=OWNER_ID)
     else:  # progress
         req["status"] = "in_progress"
@@ -702,6 +718,13 @@ def handle_reactivation_admin_confirm_callback(callback_query):
     save_db(db)
     answer_callback_query(cq_id, "Закреплено, слежу за динамикой!")
     send_message(f"📌 Закрепил: {req['partner']} → {clean_tp_name(req['tp'])}. Дам знать, как только оживёт.", chat_id=user_id)
+
+    tp_contact = db.get("tp_contacts", {}).get(req["tp"])
+    if tp_contact and tp_contact.get("id"):
+        send_message(
+            f"📌 Партнёр «{req['partner']}» закреплён за тобой. Валера будет следить за динамикой.",
+            chat_id=tp_contact["id"]
+        )
 
 def reconcile_reactivations(db, cur_key):
     """Вызывается после каждой заливки активаций — сверяет всех
@@ -1035,6 +1058,19 @@ def check_missed_checkins():
         logging.error(f"check_missed_checkins error: {e}")
 
 # ── ВСЁ ЧТО БЫЛО В ТВОЁМ ФАЙЛЕ ──────────────────────────────
+
+def clear_inline_keyboard(chat_id, message_id):
+    """Убирает кнопки у уже отправленного сообщения — используем, когда
+    решение по партнёру стало финальным (договорился/отказ), чтобы
+    торговый не мог поменять выбор повторным нажатием."""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageReplyMarkup"
+    try:
+        requests.post(url, json={
+            "chat_id": chat_id, "message_id": message_id,
+            "reply_markup": {"inline_keyboard": []}
+        }, timeout=10)
+    except Exception as e:
+        logging.error(f"clear_inline_keyboard error: {e}")
 
 def send_message(text, parse_mode="HTML", chat_id=None, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"

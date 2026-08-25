@@ -34,6 +34,10 @@ EXCLUDED_FROM_REPORT = ["Бузина Яна"]
 # Через сколько часов после разбора Валеры слать напоминание, если ТП не ответил
 REMINDER_HOURS = float(os.environ.get("REMINDER_HOURS", "2"))
 
+# Через сколько часов после выдачи партнёра на отработку (или после нажатия
+# "Ещё в работе") напоминать торговому, если решения (Договорился/Отказ) всё ещё нет
+REACTIVATION_REMINDER_HOURS = float(os.environ.get("REACTIVATION_REMINDER_HOURS", "24"))
+
 # Во сколько часов (по времени сервера) слать запрос геолокации агентам, через запятую
 CHECKIN_HOURS = os.environ.get("CHECKIN_HOURS", "10,13,16,18")
 # Дни недели для чек-инов — по умолчанию будни (пн-пт), без выходных.
@@ -603,6 +607,8 @@ def handle_reactivation_name_input(text, user_id, db):
         "closed_at": None,
         "revived": False,
         "notified_status": "none",    # "none" | "not_revived" | "revived" — дедуп уведомлений
+        "last_touched_at": now_msk().isoformat(),  # когда последний раз что-то произошло — от этого считаем напоминание
+        "reminded": False,
     }
     save_db(db)
 
@@ -690,8 +696,15 @@ def handle_reactivation_tp_response_callback(callback_query):
         send_message(f"❌ <b>{tp_display}</b> → {partner}: отказ.", chat_id=OWNER_ID)
     else:  # progress
         req["status"] = "in_progress"
+        req["last_touched_at"] = now_msk().isoformat()
+        req["reminded"] = False
         answer_callback_query(cq_id, "Принято, жду обновления")
         save_db(db)
+        if msg_chat_id and msg_id:
+            set_inline_keyboard(msg_chat_id, msg_id, [[
+                {"text": "✅ Договорился", "callback_data": f"react:{req_id}:agree"},
+                {"text": "❌ Отказ", "callback_data": f"react:{req_id}:decline"},
+            ]])
         send_message(f"⏳ <b>{tp_display}</b> → {partner}: ещё в работе.", chat_id=OWNER_ID)
 
 def handle_reactivation_admin_confirm_callback(callback_query):
@@ -1059,18 +1072,24 @@ def check_missed_checkins():
 
 # ── ВСЁ ЧТО БЫЛО В ТВОЁМ ФАЙЛЕ ──────────────────────────────
 
-def clear_inline_keyboard(chat_id, message_id):
-    """Убирает кнопки у уже отправленного сообщения — используем, когда
-    решение по партнёру стало финальным (договорился/отказ), чтобы
-    торговый не мог поменять выбор повторным нажатием."""
+def set_inline_keyboard(chat_id, message_id, buttons):
+    """Меняет кнопки у уже отправленного сообщения. buttons — список
+    рядов кнопок (как в reply_markup.inline_keyboard), пустой список [[]]
+    или [] полностью убирает клавиатуру."""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageReplyMarkup"
     try:
         requests.post(url, json={
             "chat_id": chat_id, "message_id": message_id,
-            "reply_markup": {"inline_keyboard": []}
+            "reply_markup": {"inline_keyboard": buttons}
         }, timeout=10)
     except Exception as e:
-        logging.error(f"clear_inline_keyboard error: {e}")
+        logging.error(f"set_inline_keyboard error: {e}")
+
+def clear_inline_keyboard(chat_id, message_id):
+    """Убирает кнопки у уже отправленного сообщения — используем, когда
+    решение по партнёру стало финальным (договорился/отказ), чтобы
+    торговый не мог поменять выбор повторным нажатием."""
+    set_inline_keyboard(chat_id, message_id, [])
 
 def send_message(text, parse_mode="HTML", chat_id=None, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -1731,6 +1750,70 @@ def check_reminders():
     except Exception as e:
         logging.error(f"check_reminders error: {e}")
 
+def check_reactivation_reminders():
+    """Раз в N минут проверяет партнёров на отработке, по которым торговый
+    так и не нажал финальную кнопку (Договорился/Отказ) дольше
+    REACTIVATION_REMINDER_HOURS — напоминает торговому и сигналит владельцу,
+    чтобы партнёр не потерялся в общем списке."""
+    try:
+        db = load_db()
+        reactivation = db.get("reactivation", {})
+        if not reactivation:
+            return
+        now = now_msk()
+        changed = False
+        for req_id, req in reactivation.items():
+            if req.get("status") not in ("pending_tp", "in_progress"):
+                continue
+            if req.get("reminded"):
+                continue
+            touched_at = req.get("last_touched_at") or req.get("assigned_at")
+            try:
+                since = datetime.fromisoformat(touched_at)
+            except Exception:
+                continue
+            if now - since < timedelta(hours=REACTIVATION_REMINDER_HOURS):
+                continue
+
+            partner = req["partner"]
+            tp_display = clean_tp_name(req["tp"])
+            contact = db.get("tp_contacts", {}).get(req["tp"])
+            if contact and contact.get("id"):
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+                payload = {
+                    "chat_id": contact["id"],
+                    "text": f"⏰ Напоминаю про партнёра <b>{partner}</b> — до сих пор нет финального результата. "
+                            f"Отметь, пожалуйста, результат:",
+                    "reply_markup": {"inline_keyboard": [[
+                        {"text": "✅ Договорился", "callback_data": f"react:{req_id}:agree"},
+                        {"text": "❌ Отказ", "callback_data": f"react:{req_id}:decline"},
+                    ], [
+                        {"text": "⏳ Ещё в работе", "callback_data": f"react:{req_id}:progress"},
+                    ]]}
+                }
+                try:
+                    requests.post(url, json=payload, timeout=10)
+                except Exception as e:
+                    logging.error(f"check_reactivation_reminders tp notify error: {e}")
+                send_message(
+                    f"⏰ Напомнил <b>{tp_display}</b> про партнёра «{partner}» — висит без решения "
+                    f"уже {REACTIVATION_REMINDER_HOURS:.0f}ч+.",
+                    chat_id=OWNER_ID
+                )
+            else:
+                send_message(
+                    f"⏰ Партнёр «{partner}» у <b>{tp_display}</b> висит без решения "
+                    f"{REACTIVATION_REMINDER_HOURS:.0f}ч+, а связаться с ним в личку не вышло — напомни сам.",
+                    chat_id=OWNER_ID
+                )
+            req["reminded"] = True
+            changed = True
+        if changed:
+            save_db(db)
+            logging.info("Reactivation reminders sent")
+    except Exception as e:
+        logging.error(f"check_reactivation_reminders error: {e}")
+
 def maybe_send_summary(db):
     """Если очередь разборов опустела — шлём владельцу свод и очищаем её"""
     if not db.get("pending_calls") and db.get("answered_calls"):
@@ -2332,6 +2415,7 @@ setup_bot_commands()
 # CHECKIN_HOURS считались бы по серверному времени, а не по Москве
 _scheduler = BackgroundScheduler(timezone=MOSCOW_TZ)
 _scheduler.add_job(check_reminders, "interval", minutes=15, id="valera_reminders")
+_scheduler.add_job(check_reactivation_reminders, "interval", minutes=30, id="reactivation_reminders")
 
 # Автоматическая рассылка запроса геолокации в заданные часы (CHECKIN_HOURS),
 # только по будням — по выходным у ребят законный отдых, дёргать не нужно

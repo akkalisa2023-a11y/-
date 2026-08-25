@@ -2284,12 +2284,41 @@ def setup_webhook():
     except Exception as e:
         logging.error(f"setup_webhook error: {e}")
 
+def setup_bot_commands():
+    """Регистрируем меню команд (кнопка '/' в Telegram) — только владельцу.
+    У торговых меню быть не должно вообще (default scope — пустой список),
+    /start и /whoami у них по-прежнему работают, просто без подсказки в UI."""
+    if not BOT_TOKEN or BOT_TOKEN == "YOUR_TOKEN_HERE":
+        return
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/setMyCommands"
+
+    try:
+        r = requests.post(url, json={"commands": []}, timeout=10)
+        logging.info(f"Default commands cleared: {r.json()}")
+    except Exception as e:
+        logging.error(f"setup_bot_commands default error: {e}")
+
+    owner_commands = [
+        {"command": "start", "description": "Начать / зарегистрироваться в боте"},
+        {"command": "whoami", "description": "Перерегистрироваться (выбрать себя заново)"},
+        {"command": "reactivate", "description": "Отдать спящего партнёра торговому на отработку"},
+    ]
+    try:
+        r = requests.post(url, json={
+            "commands": owner_commands,
+            "scope": {"type": "chat", "chat_id": OWNER_ID}
+        }, timeout=10)
+        logging.info(f"Owner commands set: {r.json()}")
+    except Exception as e:
+        logging.error(f"setup_bot_commands owner error: {e}")
+
 @app.route("/setup-webhook")
 def setup_webhook_endpoint():
     """Ручная перерегистрация webhook, на случай если авторегистрация при старте не сработала"""
     if not check_auth():
         return jsonify({"error": "Unauthorized"}), 401
     setup_webhook()
+    setup_bot_commands()
     return jsonify({"status": "ok"})
 
 # ── СТАРТ ────────────────────────────────────────────────────
@@ -2297,6 +2326,7 @@ def setup_webhook_endpoint():
 # и при запуске через gunicorn (который __main__ не вызывает и раньше пропускал этот шаг,
 # из-за чего webhook приходилось регистрировать руками после каждого рестарта).
 setup_webhook()
+setup_bot_commands()
 
 # Railway по умолчанию крутится в UTC — без явного часового пояса
 # CHECKIN_HOURS считались бы по серверному времени, а не по Москве

@@ -292,6 +292,7 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
   <div class="tab" onclick="sw('at',this)">Привлечение</div>
   <div class="tab" onclick="sw('ef',this)">Эффективность</div>
   <div class="tab" onclick="sw('mp',this)">Карта</div>
+  <div class="tab" onclick="sw('rc',this)">Реактивация</div>
 </div>
 
 <div class="content">
@@ -421,6 +422,31 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
   <div class="card full" style="margin-top:12px">
     <div class="ct"><span class="dot"></span>Фото с точек чек-ина</div>
     <div class="photo-gallery" id="checkin-gallery"></div>
+  </div>
+</div>
+
+<!-- РЕАКТИВАЦИЯ ПАРТНЁРОВ -->
+<div id="trc" style="display:none">
+  <div id="rc-summary" class="kgrid" style="margin-bottom:14px"></div>
+  <div class="card full">
+    <div class="ct" style="justify-content:space-between">
+      <span><span class="dot"></span>Партнёры на отработке</span>
+      <button class="upload-btn" onclick="loadReactivation()" style="padding:6px 12px">🔄 Обновить</button>
+    </div>
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead>
+          <tr>
+            <th>Торговый</th>
+            <th>Партнёр</th>
+            <th>Статус</th>
+            <th>Ожил?</th>
+            <th>Активаций</th>
+          </tr>
+        </thead>
+        <tbody id="rc-tbl"></tbody>
+      </table>
+    </div>
   </div>
 </div>
 
@@ -1126,16 +1152,74 @@ function renderEfficiency(){
 }
 
 function sw(id,el){
-  ['sv','tp','pr','at','ef','mp'].forEach(t=>document.getElementById('t'+t).style.display=t===id?'':'none');
+  ['sv','tp','pr','at','ef','mp','rc'].forEach(t=>document.getElementById('t'+t).style.display=t===id?'':'none');
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
   el.classList.add('on');
-  // На Привлечение и Карте — прячем верхние кнопки месяцев, там свои элементы
-  document.getElementById('month-btns').style.display = (id==='at'||id==='mp') ? 'none' : 'flex';
+  // На Привлечение, Карте и Реактивации — прячем верхние кнопки месяцев, там свои элементы
+  document.getElementById('month-btns').style.display = (id==='at'||id==='mp'||id==='rc') ? 'none' : 'flex';
   if(id==='at'){renderPrivlMonthBtns();renderPrivl();}
   if(id==='ef')renderEfficiency();
   if(id==='mp'){initMapIfNeeded();loadCheckinsForDate();}
+  if(id==='rc')loadReactivation();
 }
 
+
+// ── РЕАКТИВАЦИЯ ПАРТНЁРОВ ───────────────────────────────────
+
+const RC_STATUS_STYLE = {
+  'pending_tp':  {label:'⌛ Без ответа',   cls:''},
+  'in_progress': {label:'⏳ В работе',      cls:''},
+  'tp_agreed':   {label:'✅ Договорились',  cls:'up'},
+  'tp_declined': {label:'❌ Отказ',         cls:'dn'},
+  'tracking':    {label:'✅ Договорились',  cls:'up'},
+};
+
+async function loadReactivation(){
+  if (!BOT_URL) { toast('⚠️ Бот не настроен'); return; }
+  try {
+    const r = await fetch(`${BOT_URL}/reactivation-stats`);
+    const data = await r.json();
+    renderReactivationSummary(data.total);
+    renderReactivationTable(data.rows);
+  } catch(e) {
+    toast('❌ Не удалось загрузить статистику: ' + e.message);
+  }
+}
+
+function renderReactivationSummary(t){
+  const el = document.getElementById('rc-summary');
+  if (!t) { el.innerHTML = ''; return; }
+  el.innerHTML = `
+    <div class="kc"><div class="kl">Передано в работу</div><div class="kv">${t.given}</div><div class="ks">&nbsp;</div></div>
+    <div class="kc"><div class="kl">✅ Договорились</div><div class="kv">${t.agreed + t.tracking}</div><div class="ks">&nbsp;</div></div>
+    <div class="kc"><div class="kl">❌ Отказ</div><div class="kv">${t.declined}</div><div class="ks">&nbsp;</div></div>
+    <div class="kc"><div class="kl">⏳ Ещё в работе / без ответа</div><div class="kv">${t.in_progress + t.pending}</div><div class="ks">&nbsp;</div></div>
+    <div class="kc"><div class="kl">🎉 Реально ожило</div><div class="kv" style="color:var(--mint)">${t.revived}</div><div class="ks">${t.tracking?Math.round(t.revived/t.tracking*100):0}% от закреплённых</div></div>
+  `;
+}
+
+function renderReactivationTable(rows){
+  const tbl = document.getElementById('rc-tbl');
+  if (!rows || !rows.length) { tbl.innerHTML = '<tr><td colspan="5" style="padding:14px;color:var(--text3)">Пока никого не передавали на отработку</td></tr>'; return; }
+  tbl.innerHTML = rows.map(row => {
+    const st = RC_STATUS_STYLE[row.status] || {label: row.status_label, cls: ''};
+    const revivedCell = row.tracked ? (row.revived ? '<span class="up">🎉 Ожил</span>' : '<span class="dn">Пока нет</span>') : '<span style="color:var(--text3)">—</span>';
+    const actsCell = row.tracked ? (row.acts ?? 0) : '<span style="color:var(--text3)">—</span>';
+    return `<tr>
+      <td style="padding:7px 9px;border-bottom:1px solid var(--border)">${escHtml(row.tp)}</td>
+      <td style="padding:7px 9px;border-bottom:1px solid var(--border)">${escHtml(row.partner)}</td>
+      <td style="padding:7px 9px;border-bottom:1px solid var(--border)" class="${st.cls}">${st.label}</td>
+      <td style="padding:7px 9px;border-bottom:1px solid var(--border)">${revivedCell}</td>
+      <td style="padding:7px 9px;border-bottom:1px solid var(--border)">${actsCell}</td>
+    </tr>`;
+  }).join('');
+}
+
+function escHtml(s){
+  const d = document.createElement('div');
+  d.textContent = s ?? '';
+  return d.innerHTML;
+}
 
 // ── КАРТА / ЧЕК-ИНЫ ГЕОЛОКАЦИИ (Яндекс.Карты) ──────────────────
 

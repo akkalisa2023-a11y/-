@@ -756,6 +756,10 @@ def reconcile_reactivations(db, cur_key):
         acts = p.get("acts", 0) if p else 0
         contact = db.get("tp_contacts", {}).get(tp_name)
 
+        if req.get("last_acts") != acts:
+            req["last_acts"] = acts
+            changed = True
+
         if acts > 0 and not req.get("revived"):
             req["revived"] = True
             changed = True
@@ -1750,6 +1754,39 @@ def check_reminders():
     except Exception as e:
         logging.error(f"check_reminders error: {e}")
 
+def build_reactivation_stats(db):
+    """Считает статистику по всем заявкам на отработку партнёров:
+    сколько всего передано, сколько договорились/отказ/в работе/ещё
+    не ответили, сколько закреплено и сколько из закреплённых реально
+    ожило (acts > 0 по данным активаций). Разбивка — общая и по ТП."""
+    reactivation = db.get("reactivation", {})
+    total = {
+        "given": 0, "agreed": 0, "declined": 0,
+        "in_progress": 0, "pending": 0, "tracking": 0, "revived": 0,
+    }
+    by_tp = {}
+
+    for req in reactivation.values():
+        status = req.get("status")
+        tp_name = clean_tp_name(req.get("tp", "?"))
+        row = by_tp.setdefault(tp_name, dict(total))  # копия нулей той же формы
+        for bucket in (total, row):
+            bucket["given"] += 1
+            if status == "tp_agreed":
+                bucket["agreed"] += 1
+            elif status == "tp_declined":
+                bucket["declined"] += 1
+            elif status == "in_progress":
+                bucket["in_progress"] += 1
+            elif status == "pending_tp":
+                bucket["pending"] += 1
+            elif status == "tracking":
+                bucket["tracking"] += 1
+                if req.get("revived"):
+                    bucket["revived"] += 1
+
+    return total, by_tp
+
 def check_reactivation_reminders():
     """Раз в N минут проверяет партнёров на отработке, по которым торговый
     так и не нажал финальную кнопку (Договорился/Отказ) дольше
@@ -2335,6 +2372,41 @@ def send_report():
     except Exception as e:
         logging.error(f"send_report error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/reactivation-stats")
+def reactivation_stats():
+    """Отдаёт данные для вкладки 'Реактивация' в дашборде: построчно
+    по каждому партнёру на отработке (торговый, партнёр, статус, ожил ли,
+    сколько активаций) + сводку по команде и по каждому торговому."""
+    db = load_db()
+    reactivation = db.get("reactivation", {})
+
+    STATUS_LABELS = {
+        "pending_tp": "Без ответа",
+        "in_progress": "В работе",
+        "tp_agreed": "Договорились",
+        "tp_declined": "Отказ",
+        "tracking": "Договорились",  # закреплено = уже было "Договорился", просто дальше отслеживаем
+    }
+
+    rows = []
+    for req_id, req in reactivation.items():
+        status = req.get("status", "")
+        rows.append({
+            "id": req_id,
+            "tp": clean_tp_name(req.get("tp", "")),
+            "partner": req.get("partner", ""),
+            "status": status,
+            "status_label": STATUS_LABELS.get(status, status),
+            "tracked": status == "tracking",
+            "revived": bool(req.get("revived")) if status == "tracking" else None,
+            "acts": req.get("last_acts", 0) if status == "tracking" else None,
+            "assigned_at": req.get("assigned_at"),
+        })
+    rows.sort(key=lambda r: r.get("assigned_at") or "", reverse=True)
+
+    total, by_tp = build_reactivation_stats(db)
+    return jsonify({"rows": rows, "total": total, "by_tp": by_tp})
 
 # Персональный отчёт (опционально)
 @app.route("/send-personal", methods=["POST"])

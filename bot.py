@@ -99,6 +99,9 @@ def load_db():
     db.setdefault("vacations", {})          # {tp_name: [{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}, ...]}
     db.setdefault("seen_subdealers", [])    # ["торговый|||имя_субдилера", ...] — кому уже сообщили
     db.setdefault("tp_name_codes", {})     # {short_code: full_tp_name} — для callback_data кнопок
+    db.setdefault("reactivation", {})      # {req_id: {partner, tp, status, ...}} — спящие партнёры на отработке
+    db.setdefault("admin_state", {})       # {"action": "...", ...} — что владелец сейчас вводит боту
+    db.setdefault("partner_trend_state", {})  # {partner_name: {"status":, "notified_status":}} — дедуп уведомлений о падении/нуле
     return db
 
 def save_db(db):
@@ -512,6 +515,272 @@ def handle_territory_approval_callback(callback_query):
         answer_callback_query(cq_id, "Отклонено")
         if agent_chat_id:
             send_message(f"❌ Руководитель не подтвердил «{city}» как твою территорию.", chat_id=agent_chat_id)
+
+    save_db(db)
+
+# ── РЕАКТИВАЦИЯ СПЯЩИХ ПАРТНЁРОВ ──────────────────────────────
+# Владелец вводит партнёра + ТП прямо в боте (по одному, без опечаток —
+# копирует из своей системы). Бот шлёт ТП кнопки, ответ ТП летит владельцу
+# с пометкой, какой именно ТП ответил. Финальную галочку "закрепил" ставит
+# сам владелец — только с этого момента партнёр официально на отслеживании.
+
+def find_owning_tp(db, partner_name):
+    """Ищет, за каким ТП числится партнёр с таким именем — по данным
+    активаций (свежие месяцы приоритетнее). Точное совпадение по имени,
+    без фаззи-подбора — лучше не найти, чем ошибиться адресатом."""
+    partner_name = (partner_name or "").strip()
+    if not partner_name:
+        return None
+    months = db.get("months", {})
+    for m in sorted(months.keys(), reverse=True):
+        for p in months[m].get("partners", []):
+            if (p.get("r") or "").strip() == partner_name:
+                return p.get("t")
+    return None
+
+def start_reactivation_flow(chat_id, db):
+    """Владелец прислал /reactivate — показываем список ТП кнопками."""
+    all_names = get_all_tp_names(db)
+    if not all_names:
+        send_message("Нет загруженных данных по ТП — сначала залей активации.", chat_id=chat_id)
+        return
+    code_map = db.setdefault("tp_name_codes", {})
+    for name in all_names:
+        code_map[tp_name_code(name)] = name
+    save_db(db)
+    buttons = [[{"text": clean_tp_name(name), "callback_data": f"rtp:{tp_name_code(name)}"}] for name in all_names]
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": "🎯 Кому из ТП отдаём партнёра на отработку?",
+        "reply_markup": {"inline_keyboard": buttons}
+    }
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        logging.error(f"start_reactivation_flow error: {e}")
+
+def handle_reactivation_tp_pick_callback(callback_query):
+    """Владелец выбрал ТП — ждём следующим сообщением имя партнёра."""
+    data_str = callback_query.get("data", "")
+    cq_id = callback_query.get("id", "")
+    from_user = callback_query.get("from", {})
+    user_id = from_user.get("id", "")
+
+    if str(user_id) != str(OWNER_ID):
+        answer_callback_query(cq_id, "Только руководитель может это делать")
+        return
+
+    code = data_str[len("rtp:"):]
+    db = load_db()
+    tp_name = db.get("tp_name_codes", {}).get(code)
+    if not tp_name:
+        answer_callback_query(cq_id, "Список устарел, напиши /reactivate ещё раз")
+        return
+
+    db["admin_state"] = {"action": "await_reactivation_name", "tp": tp_name}
+    save_db(db)
+    answer_callback_query(cq_id, "Выбрано!")
+    send_message(f"Пришли ФИО партнёра для <b>{clean_tp_name(tp_name)}</b> следующим сообщением.", chat_id=user_id)
+
+def handle_reactivation_name_input(text, user_id, db):
+    """Владелец прислал ФИО партнёра — создаём запись и шлём ТП кнопки."""
+    state = db.get("admin_state", {})
+    tp_name = state.get("tp")
+    db["admin_state"] = {}
+
+    partner_name = text.strip()
+    if not partner_name:
+        save_db(db)
+        return
+
+    req_id = uuid.uuid4().hex[:10]
+    db.setdefault("reactivation", {})[req_id] = {
+        "partner": partner_name,
+        "tp": tp_name,
+        "status": "pending_tp",       # pending_tp -> tp_agreed/tp_declined -> tracking
+        "assigned_at": now_msk().isoformat(),
+        "closed_at": None,
+        "revived": False,
+        "notified_status": "none",    # "none" | "not_revived" | "revived" — дедуп уведомлений
+    }
+    save_db(db)
+
+    contact = db.get("tp_contacts", {}).get(tp_name)
+    if contact and contact.get("id"):
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": contact["id"],
+            "text": f"🎯 Валера даёт тебе на отработку партнёра: <b>{partner_name}</b>\n\nПрозвони/съезди и отметь результат:",
+            "reply_markup": {"inline_keyboard": [[
+                {"text": "✅ Договорился", "callback_data": f"react:{req_id}:agree"},
+                {"text": "❌ Отказ", "callback_data": f"react:{req_id}:decline"},
+            ], [
+                {"text": "⏳ Ещё в работе", "callback_data": f"react:{req_id}:progress"},
+            ]]}
+        }
+        try:
+            requests.post(url, json=payload, timeout=10)
+        except Exception as e:
+            logging.error(f"handle_reactivation_name_input notify error: {e}")
+        send_message(f"✅ Отправил {clean_tp_name(tp_name)} партнёра «{partner_name}».", chat_id=user_id)
+    else:
+        send_message(
+            f"⚠️ {clean_tp_name(tp_name)} ещё не зарегистрирован в боте — не смог отправить «{partner_name}». "
+            f"Запись сохранил, отправь ему сам, что ты решил, чтобы он написал /start боту.",
+            chat_id=user_id
+        )
+
+def handle_reactivation_tp_response_callback(callback_query):
+    """ТП нажал одну из кнопок по своему партнёру на отработке."""
+    data_str = callback_query.get("data", "")
+    cq_id = callback_query.get("id", "")
+    from_user = callback_query.get("from", {})
+
+    parts = data_str.split(":")
+    if len(parts) != 3:
+        return
+    _, req_id, decision = parts
+
+    db = load_db()
+    req = db.get("reactivation", {}).get(req_id)
+    if not req:
+        answer_callback_query(cq_id, "Запись не найдена (возможно, устарела)")
+        return
+
+    partner = req["partner"]
+    tp_display = clean_tp_name(req["tp"])
+
+    if decision == "agree":
+        req["status"] = "tp_agreed"
+        answer_callback_query(cq_id, "Отметил — договорился!")
+        save_db(db)
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": OWNER_ID,
+            "text": f"✅ <b>{tp_display}</b> → {partner}: договорились!\n\nЗакрепить в отслеживании?",
+            "reply_markup": {"inline_keyboard": [[
+                {"text": "📌 Закрепить", "callback_data": f"reactconfirm:{req_id}"}
+            ]]}
+        }
+        try:
+            requests.post(url, json=payload, timeout=10)
+        except Exception as e:
+            logging.error(f"handle_reactivation_tp_response_callback owner notify error: {e}")
+    elif decision == "decline":
+        req["status"] = "tp_declined"
+        answer_callback_query(cq_id, "Отметил отказ")
+        save_db(db)
+        send_message(f"❌ <b>{tp_display}</b> → {partner}: отказ.", chat_id=OWNER_ID)
+    else:  # progress
+        req["status"] = "in_progress"
+        answer_callback_query(cq_id, "Принято, жду обновления")
+        save_db(db)
+        send_message(f"⏳ <b>{tp_display}</b> → {partner}: ещё в работе.", chat_id=OWNER_ID)
+
+def handle_reactivation_admin_confirm_callback(callback_query):
+    """Финальная галочка владельца — с этого момента партнёр официально
+    на отслеживании, начинается сверка с активациями."""
+    data_str = callback_query.get("data", "")
+    cq_id = callback_query.get("id", "")
+    from_user = callback_query.get("from", {})
+    user_id = from_user.get("id", "")
+
+    if str(user_id) != str(OWNER_ID):
+        answer_callback_query(cq_id, "Только руководитель может это делать")
+        return
+
+    req_id = data_str[len("reactconfirm:"):]
+    db = load_db()
+    req = db.get("reactivation", {}).get(req_id)
+    if not req:
+        answer_callback_query(cq_id, "Запись не найдена")
+        return
+
+    req["status"] = "tracking"
+    req["closed_at"] = now_msk().isoformat()
+    save_db(db)
+    answer_callback_query(cq_id, "Закреплено, слежу за динамикой!")
+    send_message(f"📌 Закрепил: {req['partner']} → {clean_tp_name(req['tp'])}. Дам знать, как только оживёт.", chat_id=user_id)
+
+def reconcile_reactivations(db, cur_key):
+    """Вызывается после каждой заливки активаций — сверяет всех
+    закреплённых на отслеживании партнёров с новыми данными за месяц."""
+    reactivation = db.get("reactivation", {})
+    if not reactivation:
+        return
+    month_partners = {p.get("r", "").strip(): p for p in db["months"].get(cur_key, {}).get("partners", [])}
+    changed = False
+    for req_id, req in reactivation.items():
+        if req.get("status") != "tracking":
+            continue
+        partner = req["partner"]
+        tp_name = req["tp"]
+        p = month_partners.get(partner)
+        acts = p.get("acts", 0) if p else 0
+        contact = db.get("tp_contacts", {}).get(tp_name)
+
+        if acts > 0 and not req.get("revived"):
+            req["revived"] = True
+            changed = True
+            if req.get("notified_status") != "revived":
+                req["notified_status"] = "revived"
+                if contact and contact.get("id"):
+                    send_message(f"🎉 Ура, партнёр <b>{partner}</b> ожил — {acts} акт. в этом месяце! Отличная работа!", chat_id=contact["id"])
+                send_message(f"🎉 У <b>{clean_tp_name(tp_name)}</b> ожил партнёр {partner} — {acts} акт.!", chat_id=OWNER_ID)
+def reconcile_partner_trends(db, cur_key, prev_key, threshold_pct=20):
+    """Вызывается после каждой заливки активаций — сравнивает всех партнёров
+    (не только реактивацию) с прошлым месяцем, шлёт ТП список тех, кто ушёл
+    в ноль или заметно просел. Уведомляет только про НОВУЮ динамику —
+    если партнёр уже в этом статусе и про него уже сообщали, молчим."""
+    if not prev_key:
+        return
+    cur_partners  = {p.get("r", "").strip(): p for p in db["months"].get(cur_key, {}).get("partners", [])}
+    prev_partners = {p.get("r", "").strip(): p for p in db["months"].get(prev_key, {}).get("partners", [])}
+    trend_state = db.setdefault("partner_trend_state", {})
+
+    by_tp = {}  # {tp_name: {"zero": [names], "decline": [(name, pct)]}}
+    for name, pp in prev_partners.items():
+        prev_acts = pp.get("acts", 0)
+        if prev_acts <= 0:
+            continue
+        cp = cur_partners.get(name)
+        cur_acts = cp.get("acts", 0) if cp else 0
+        tp_name = (cp.get("t") if cp else pp.get("t"))
+
+        if cur_acts == 0:
+            status = "zero"
+        elif cur_acts < prev_acts * (1 - threshold_pct / 100):
+            status = "decline"
+        else:
+            status = "ok"
+
+        state = trend_state.setdefault(name, {"status": "ok", "notified_status": "none"})
+        state["status"] = status
+
+        if status in ("zero", "decline") and state.get("notified_status") != status:
+            state["notified_status"] = status
+            bucket = by_tp.setdefault(tp_name, {"zero": [], "decline": []})
+            if status == "zero":
+                bucket["zero"].append(name)
+            else:
+                pct = round((prev_acts - cur_acts) / prev_acts * 100)
+                bucket["decline"].append((name, pct))
+        elif status == "ok":
+            state["notified_status"] = "none"  # ожил/восстановился — при следующем падении уведомим заново
+
+    for tp_name, bucket in by_tp.items():
+        if not tp_name:
+            continue
+        contact = db.get("tp_contacts", {}).get(tp_name)
+        if not (contact and contact.get("id")):
+            continue
+        lines = ["⚠️ <b>Обрати внимание на партнёров:</b>", ""]
+        for name in bucket["zero"]:
+            lines.append(f"🔴 {name} — ушёл в ноль (была активность в прошлом месяце)")
+        for name, pct in bucket["decline"]:
+            lines.append(f"🟡 {name} — падение на {pct}% к прошлому месяцу")
+        send_message("\n".join(lines), chat_id=contact["id"])
 
     save_db(db)
 
@@ -1454,6 +1723,12 @@ def tg_webhook():
                     handle_territory_request_callback(callback_query)
                 elif cq_data.startswith("terrapp:"):
                     handle_territory_approval_callback(callback_query)
+                elif cq_data.startswith("rtp:"):
+                    handle_reactivation_tp_pick_callback(callback_query)
+                elif cq_data.startswith("react:"):
+                    handle_reactivation_tp_response_callback(callback_query)
+                elif cq_data.startswith("reactconfirm:"):
+                    handle_reactivation_admin_confirm_callback(callback_query)
                 return jsonify({"ok": True})
 
             msg = data.get("message", {})
@@ -1498,7 +1773,18 @@ def tg_webhook():
                     # На случай, если агент сменил телефон/аккаунт и надо перерегистрироваться
                     db = load_db()
                     send_registration_keyboard(user_id, db)
+                elif text == "/reactivate" and str(user_id) == str(OWNER_ID):
+                    db = load_db()
+                    start_reactivation_flow(user_id, db)
                 return jsonify({"ok": True})
+
+            # Владелец сейчас вводит ФИО партнёра на отработку — перехватываем
+            # раньше общей логики, это не сообщение от ТП.
+            if str(user_id) == str(OWNER_ID):
+                db = load_db()
+                if db.get("admin_state", {}).get("action") == "await_reactivation_name":
+                    handle_reactivation_name_input(text, user_id, db)
+                    return jsonify({"ok": True})
 
             db = load_db()
 
@@ -1591,6 +1877,18 @@ def upload_activations():
     db["months"][month] = data
     save_db(db)
     logging.info(f"Saved activations {month}: {data.get('total')} acts, {data.get('fraud')} fraud")
+
+    # Сверяем реактивацию "спящих" и общую динамику по всем партнёрам —
+    # шлём ТП/владельцу только то, что реально новое (см. дедуп внутри функций)
+    try:
+        all_keys = sorted(db["months"].keys())
+        idx = all_keys.index(month)
+        prev_key = all_keys[idx - 1] if idx > 0 else None
+        reconcile_reactivations(db, month)
+        reconcile_partner_trends(db, month, prev_key)
+    except Exception as e:
+        logging.error(f"reconcile after upload_activations error: {e}")
+
     return jsonify({"status": "ok", "month": month, "total": data.get("total")})
 
 # Дашборд заливает данные привлечения
@@ -1621,7 +1919,10 @@ def upload_privl():
     return jsonify({"status": "ok", "months": list(privl_months.keys()) or ["legacy"]})
 
 # Новые субдилеры — уведомляем торгового лично (от Валеры), только про тех,
-# о ком ещё не сообщали раньше (дедупликация по имени торгового + субдилера)
+# о ком ещё не сообщали раньше (дедупликация по имени торгового + субдилера).
+# "torgovy" из выгрузки — это тот, кто создал суба: может быть сам ТП (тогда
+# просто "у тебя новый субдилер"), а может быть партнёр этого ТП (тогда
+# ищем, чей это партнёр, и говорим "у твоего партнёра X появился суб Y").
 @app.route("/new-subdealers", methods=["POST"])
 def new_subdealers():
     if not check_auth():
@@ -1633,28 +1934,41 @@ def new_subdealers():
         db = load_db()
         seen = set(db.setdefault("seen_subdealers", []))
         contacts = db.get("tp_contacts", {})
+        all_tp_names = set(get_all_tp_names(db, include_inactive=True))
         for item in incoming:
-            torgovy = (item.get("torgovy") or "").strip()
+            creator = (item.get("torgovy") or "").strip()
             name = (item.get("name") or "").strip()
-            if not torgovy or not name:
+            if not creator or not name:
                 continue
-            key = f"{torgovy}|||{name}"
+            key = f"{creator}|||{name}"
             if key in seen:
                 continue
             seen.add(key)
 
-            contact = contacts.get(torgovy)
-            if not contact:
-                # Точного совпадения имени нет — пробуем как обычно, по частичному имени
-                matched = match_tp_name(torgovy, contacts.keys())
-                contact = contacts.get(matched) if matched else None
-
-            if contact and contact.get("id"):
-                send_message(
-                    f"🆕 Валера сообщает: у тебя новый субдилер — <b>{name}</b>. Свяжись с ним!",
-                    chat_id=contact["id"]
-                )
-                notified += 1
+            if creator in all_tp_names:
+                # Создал сам ТП напрямую
+                contact = contacts.get(creator)
+                if not contact:
+                    matched = match_tp_name(creator, contacts.keys())
+                    contact = contacts.get(matched) if matched else None
+                if contact and contact.get("id"):
+                    send_message(
+                        f"🆕 Валера сообщает: у тебя новый субдилер — <b>{name}</b>. Свяжись с ним!",
+                        chat_id=contact["id"]
+                    )
+                    notified += 1
+            else:
+                # creator — не ТП, значит это партнёр; ищем, чей он
+                owning_tp = find_owning_tp(db, creator)
+                if not owning_tp:
+                    continue
+                contact = contacts.get(owning_tp)
+                if contact and contact.get("id"):
+                    send_message(
+                        f"🆕 Валера сообщает: у твоего партнёра <b>{creator}</b> появился суб — <b>{name}</b>. Свяжись с ним!",
+                        chat_id=contact["id"]
+                    )
+                    notified += 1
 
         db["seen_subdealers"] = list(seen)
         save_db(db)

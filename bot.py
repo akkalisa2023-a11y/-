@@ -598,18 +598,62 @@ def handle_reactivation_name_input(text, user_id, db):
         save_db(db)
         return
 
-    req_id = uuid.uuid4().hex[:10]
-    db.setdefault("reactivation", {})[req_id] = {
-        "partner": partner_name,
-        "tp": tp_name,
-        "status": "pending_tp",       # pending_tp -> tp_agreed/tp_declined -> tracking
-        "assigned_at": now_msk().isoformat(),
-        "closed_at": None,
-        "revived": False,
-        "notified_status": "none",    # "none" | "not_revived" | "revived" — дедуп уведомлений
-        "last_touched_at": now_msk().isoformat(),  # когда последний раз что-то произошло — от этого считаем напоминание
-        "reminded": False,
-    }
+    # Ищем уже существующие заявки по этому партнёру: активная (не отказ) —
+    # блокируем повторную выдачу; отказная — переиспользуем ту же запись
+    # (перезатираем данные), чтобы не плодить дубли при повторной попытке.
+    existing_active = None
+    existing_declined_id = None
+    for rid, req in db.get("reactivation", {}).items():
+        if req.get("partner", "").strip().lower() != partner_name.lower():
+            continue
+        if req.get("status") != "tp_declined":
+            existing_active = req
+            break
+        existing_declined_id = rid
+
+    if existing_active:
+        save_db(db)
+        status_label = {
+            "pending_tp": "ждёт ответа торгового",
+            "in_progress": "в работе",
+            "tp_agreed": "уже договорились",
+            "tracking": "закреплён и отслеживается",
+        }.get(existing_active.get("status"), existing_active.get("status"))
+        send_message(
+            f"⚠️ Партнёр «{partner_name}» уже был отдан <b>{clean_tp_name(existing_active['tp'])}</b> "
+            f"(статус: {status_label}) — повторно выдать нельзя, пока по нему нет отказа.",
+            chat_id=user_id
+        )
+        return
+
+    if existing_declined_id:
+        # Повторная попытка по ранее отказавшему партнёру — перезаписываем
+        # старую запись новыми данными вместо создания дубля.
+        req_id = existing_declined_id
+        db["reactivation"][req_id] = {
+            "partner": partner_name,
+            "tp": tp_name,
+            "status": "pending_tp",
+            "assigned_at": now_msk().isoformat(),
+            "closed_at": None,
+            "revived": False,
+            "notified_status": "none",
+            "last_touched_at": now_msk().isoformat(),
+            "reminded": False,
+        }
+    else:
+        req_id = uuid.uuid4().hex[:10]
+        db.setdefault("reactivation", {})[req_id] = {
+            "partner": partner_name,
+            "tp": tp_name,
+            "status": "pending_tp",       # pending_tp -> tp_agreed/tp_declined -> tracking
+            "assigned_at": now_msk().isoformat(),
+            "closed_at": None,
+            "revived": False,
+            "notified_status": "none",    # "none" | "not_revived" | "revived" — дедуп уведомлений
+            "last_touched_at": now_msk().isoformat(),  # когда последний раз что-то произошло — от этого считаем напоминание
+            "reminded": False,
+        }
     save_db(db)
 
     contact = db.get("tp_contacts", {}).get(tp_name)
@@ -741,12 +785,18 @@ def handle_reactivation_admin_confirm_callback(callback_query):
 
 def reconcile_reactivations(db, cur_key):
     """Вызывается после каждой заливки активаций — сверяет всех
-    закреплённых на отслеживании партнёров с новыми данными за месяц."""
+    закреплённых на отслеживании партнёров с новыми данными за месяц.
+    По каждому закреплённому партнёру: если появились активации —
+    шлём "ожил" один раз (когда статус меняется). Если активаций всё ещё
+    нет — шлём "не ожил" каждый раз при заливке, пока не оживёт, чтобы
+    торговый не терял их из виду в общем списке."""
     reactivation = db.get("reactivation", {})
     if not reactivation:
         return
     month_partners = {p.get("r", "").strip(): p for p in db["months"].get(cur_key, {}).get("partners", [])}
     changed = False
+    not_revived_by_tp = {}  # {tp_name: [partner_names]}
+
     for req_id, req in reactivation.items():
         if req.get("status") != "tracking":
             continue
@@ -768,6 +818,22 @@ def reconcile_reactivations(db, cur_key):
                 if contact and contact.get("id"):
                     send_message(f"🎉 Ура, партнёр <b>{partner}</b> ожил — {acts} акт. в этом месяце! Отличная работа!", chat_id=contact["id"])
                 send_message(f"🎉 У <b>{clean_tp_name(tp_name)}</b> ожил партнёр {partner} — {acts} акт.!", chat_id=OWNER_ID)
+        elif acts == 0 and not req.get("revived"):
+            not_revived_by_tp.setdefault(tp_name, []).append(partner)
+
+    for tp_name, names in not_revived_by_tp.items():
+        contact = db.get("tp_contacts", {}).get(tp_name)
+        names_list = "\n".join(f"• {n}" for n in names)
+        if contact and contact.get("id"):
+            word = "партнёр" if len(names) == 1 else "партнёры"
+            send_message(
+                f"😴 Ещё не ожил{'и' if len(names)>1 else ''} {word} за тобой:\n{names_list}",
+                chat_id=contact["id"]
+            )
+
+    if changed:
+        save_db(db)
+
 def reconcile_partner_trends(db, cur_key, prev_key, threshold_pct=20):
     """Вызывается после каждой заливки активаций — сравнивает всех партнёров
     (не только реактивацию) с прошлым месяцем, шлёт ТП список тех, кто ушёл
@@ -2372,6 +2438,49 @@ def send_report():
     except Exception as e:
         logging.error(f"send_report error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/reactivation/<req_id>", methods=["DELETE"])
+def delete_reactivation(req_id):
+    """Удаляет запись о партнёре на отработке — для чистки дублей/тестовых записей."""
+    if not check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    db = load_db()
+    if req_id in db.get("reactivation", {}):
+        del db["reactivation"][req_id]
+        save_db(db)
+        return jsonify({"status": "deleted"})
+    return jsonify({"error": "not found"}), 404
+
+@app.route("/reactivation/dedupe", methods=["POST"])
+def dedupe_reactivation():
+    """Автоматически чистит дубли: если по одному партнёру несколько
+    записей (например, из-за тестов), оставляет только самую 'старшую'
+    по статусу (tracking > tp_agreed > in_progress > pending_tp > tp_declined),
+    а при равенстве — самую свежую по времени выдачи. Остальные удаляет.
+    Ничего, кроме настоящих дублей, не трогает — точечно партнёра выбрать нельзя."""
+    if not check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    db = load_db()
+    reactivation = db.get("reactivation", {})
+
+    priority = {"tracking": 4, "tp_agreed": 3, "in_progress": 2, "pending_tp": 1, "tp_declined": 0}
+    groups = {}
+    for rid, req in reactivation.items():
+        key = req.get("partner", "").strip().lower()
+        groups.setdefault(key, []).append((rid, req))
+
+    removed = 0
+    for key, items in groups.items():
+        if len(items) <= 1:
+            continue
+        items.sort(key=lambda x: (priority.get(x[1].get("status"), -1), x[1].get("assigned_at", "")), reverse=True)
+        for rid, _ in items[1:]:
+            del reactivation[rid]
+            removed += 1
+
+    if removed:
+        save_db(db)
+    return jsonify({"status": "ok", "removed": removed})
 
 @app.route("/reactivation-stats")
 def reactivation_stats():

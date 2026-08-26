@@ -431,7 +431,10 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
   <div class="card full">
     <div class="ct" style="justify-content:space-between">
       <span><span class="dot"></span>Партнёры на отработке</span>
-      <button class="upload-btn" onclick="loadReactivation()" style="padding:6px 12px">🔄 Обновить</button>
+      <span style="display:flex;gap:8px">
+        <button class="upload-btn" onclick="dedupeReactivation()" style="padding:6px 12px">🧹 Убрать дубли</button>
+        <button class="upload-btn" onclick="loadReactivation()" style="padding:6px 12px">🔄 Обновить</button>
+      </span>
     </div>
     <div style="overflow-x:auto">
       <table style="width:100%;border-collapse:collapse">
@@ -1189,11 +1192,14 @@ async function loadReactivation(){
 function renderReactivationSummary(t){
   const el = document.getElementById('rc-summary');
   if (!t) { el.innerHTML = ''; return; }
+  const noAnswer = t.pending;
+  const noAnswerColor = noAnswer > 0 ? 'color:#e67828' : '';
   el.innerHTML = `
     <div class="kc"><div class="kl">Передано в работу</div><div class="kv">${t.given}</div><div class="ks">&nbsp;</div></div>
     <div class="kc"><div class="kl">✅ Договорились</div><div class="kv">${t.agreed + t.tracking}</div><div class="ks">&nbsp;</div></div>
     <div class="kc"><div class="kl">❌ Отказ</div><div class="kv">${t.declined}</div><div class="ks">&nbsp;</div></div>
-    <div class="kc"><div class="kl">⏳ Ещё в работе / без ответа</div><div class="kv">${t.in_progress + t.pending}</div><div class="ks">&nbsp;</div></div>
+    <div class="kc"><div class="kl">⌛ Без ответа</div><div class="kv" style="${noAnswerColor}">${noAnswer}</div><div class="ks">&nbsp;</div></div>
+    <div class="kc"><div class="kl">⏳ Ещё в работе</div><div class="kv">${t.in_progress}</div><div class="ks">&nbsp;</div></div>
     <div class="kc"><div class="kl">🎉 Реально ожило</div><div class="kv" style="color:var(--mint)">${t.revived}</div><div class="ks">${t.tracking?Math.round(t.revived/t.tracking*100):0}% от закреплённых</div></div>
   `;
 }
@@ -1205,7 +1211,9 @@ function renderReactivationTable(rows){
     const st = RC_STATUS_STYLE[row.status] || {label: row.status_label, cls: ''};
     const revivedCell = row.tracked ? (row.revived ? '<span class="up">🎉 Ожил</span>' : '<span class="dn">Пока нет</span>') : '<span style="color:var(--text3)">—</span>';
     const actsCell = row.tracked ? (row.acts ?? 0) : '<span style="color:var(--text3)">—</span>';
-    return `<tr>
+    // Подсвечиваем строку, если торговый вообще ещё не ответил — чтобы такие не терялись в общем списке
+    const rowStyle = row.status === 'pending_tp' ? 'background:rgba(230,120,40,.12)' : '';
+    return `<tr style="${rowStyle}">
       <td style="padding:7px 9px;border-bottom:1px solid var(--border)">${escHtml(row.tp)}</td>
       <td style="padding:7px 9px;border-bottom:1px solid var(--border)">${escHtml(row.partner)}</td>
       <td style="padding:7px 9px;border-bottom:1px solid var(--border)" class="${st.cls}">${st.label}</td>
@@ -1213,6 +1221,20 @@ function renderReactivationTable(rows){
       <td style="padding:7px 9px;border-bottom:1px solid var(--border)">${actsCell}</td>
     </tr>`;
   }).join('');
+}
+
+async function dedupeReactivation(){
+  if (!BOT_URL) { toast('⚠️ Бот не настроен'); return; }
+  const secret = localStorage.getItem('as_api_secret') || 'as_secret_2026';
+  try {
+    const r = await fetch(`${BOT_URL}/reactivation/dedupe`, { method: 'POST', headers: { 'X-API-Secret': secret } });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
+    toast(data.removed ? `🧹 Удалено дублей: ${data.removed}` : '✅ Дублей не найдено');
+    loadReactivation();
+  } catch(e) {
+    toast('❌ Не удалось убрать дубли: ' + e.message);
+  }
 }
 
 function escHtml(s){

@@ -603,7 +603,7 @@ function excelToMonth(v){
 function processActivations(headers, rows){
   const iR=colIdx(headers,'Ритейл'), iT=colIdx(headers,'Торговый'),
         iO=colIdx(headers,'Оператор'), iD=colIdx(headers,'Дата активации'),
-        iPR=colIdx(headers,'Причина отключения');
+        iPR=colIdx(headers,'Причина отключения'), iRT=colIdx(headers,'Ритейл 1С');
   if(iR<0||iT<0||iD<0){toast('❌ Не найдены нужные столбцы');return;}
   const byM={};
   rows.forEach(r=>{
@@ -623,6 +623,7 @@ function processActivations(headers, rows){
     }
     byM[m].push({r:String(r[iR]||'').trim(), t:String(r[iT]||'').trim(),
                   op:String(r[iO]||'').trim(),
+                  rt:iRT>=0 ? String(r[iRT]||'').trim() : '',
                   date: dateStr,
                   fraud: iPR>=0 && String(r[iPR]||'').trim()==='Фрод'});
   });
@@ -639,8 +640,9 @@ function processActivations(headers, rows){
       tpMap[a.t].acts++; if(a.fraud)tpMap[a.t].fraud++;
       tpMap[a.t].parts.add(a.r);
       const k=a.r+'|||'+a.t;
-      if(!prMap[k])prMap[k]={r:a.r,t:a.t,acts:0,fraud:0};
+      if(!prMap[k])prMap[k]={r:a.r,t:a.t,acts:0,fraud:0,rt:a.rt||''};
       prMap[k].acts++; if(a.fraud)prMap[k].fraud++;
+      if(a.rt && !prMap[k].rt) prMap[k].rt = a.rt;
       if(a.op)ops[a.op]=(ops[a.op]||0)+1;
     });
     const tpList=Object.values(tpMap).map(tp=>{
@@ -1213,9 +1215,14 @@ function renderReactivationTable(rows){
     const actsCell = row.tracked ? (row.acts ?? 0) : '<span style="color:var(--text3)">—</span>';
     // Подсвечиваем строку, если торговый вообще ещё не ответил — чтобы такие не терялись в общем списке
     const rowStyle = row.status === 'pending_tp' ? 'background:rgba(230,120,40,.12)' : '';
+    const partnerFull = row.partner_full || row.partner;
+    const partnerLines = String(partnerFull).split('\n').filter(Boolean);
+    const partnerCell = partnerLines.length > 1
+      ? `${escHtml(partnerLines[0])}<div style="color:var(--text3);font-size:12px">${escHtml(partnerLines.slice(1).join(' · '))}</div>`
+      : escHtml(partnerLines[0] || '');
     return `<tr style="${rowStyle}">
       <td style="padding:7px 9px;border-bottom:1px solid var(--border)">${escHtml(row.tp)}</td>
-      <td style="padding:7px 9px;border-bottom:1px solid var(--border)">${escHtml(row.partner)}</td>
+      <td style="padding:7px 9px;border-bottom:1px solid var(--border)">${partnerCell}</td>
       <td style="padding:7px 9px;border-bottom:1px solid var(--border)" class="${st.cls}">${st.label}</td>
       <td style="padding:7px 9px;border-bottom:1px solid var(--border)">${revivedCell}</td>
       <td style="padding:7px 9px;border-bottom:1px solid var(--border)">${actsCell}</td>

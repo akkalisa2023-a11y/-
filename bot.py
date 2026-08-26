@@ -1,4 +1,4 @@
-import os, json, logging, random, calendar
+import os, json, logging, random, calendar, re
 from zoneinfo import ZoneInfo
 import uuid
 import fcntl
@@ -118,6 +118,37 @@ def check_auth():
     return secret == API_SECRET
 
 # ── СОПОСТАВЛЕНИЕ ИМЁН ТП ↔ TELEGRAM ────────────────────────
+
+def norm_name(name):
+    """Нормализует ФИО партнёра для сравнения: нижний регистр + схлопывает
+    лишние пробелы. Без этого 'Солтаев Умар' и 'СОЛТАЕВ УМАР' (или с двойным
+    пробелом) считались бы разными людьми и активации не находились."""
+    return " ".join((name or "").split()).lower()
+
+def extract_partner_info(raw_text):
+    """Владелец часто копирует партнёра целой карточкой из своей системы:
+    'ФИО\\nтелефон / RT-код\\nИсточник' (несколько строк) или всё в одну
+    строку. ФИО/телефон/RT-код распознаём отдельно — они нужны только
+    для сопоставления с отчётом по активациям (RT-код самый надёжный).
+    Само отображение (торговому, в дашборде) идёт по 'full' — это вся
+    введённая карточка как есть, без обрезки: торговому нужен телефон
+    и источник, чтобы реально прозвонить партнёра, а не только имя."""
+    text = raw_text or ""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    first_line = lines[0] if lines else ""
+    full = "\n".join(lines)  # та же карточка, просто без пустых строк по краям
+
+    # RT-код и телефон могут быть на первой строке (если всё в одну строку)
+    # или на второй (карточка из нескольких строк) — ищем по всему тексту.
+    rt_match = re.search(r"\bRT\d+\b", text, re.IGNORECASE)
+    rt_code = rt_match.group(0).upper() if rt_match else ""
+    phone_match = re.search(r"\b(\d{9,12})\b", text)
+    phone = phone_match.group(1) if phone_match else ""
+
+    # ФИО — часть первой строки до первой цифры/слэша (номер телефона/RT-код)
+    m = re.match(r"^([^\d/]+)", first_line)
+    fio = (m.group(1) if m else first_line).strip(" ,-")
+    return {"fio": fio, "phone": phone, "rt_code": rt_code, "full": full or fio}
 
 def clean_tp_name(name):
     """Убирает пометки типа '(Торговый New)' из имени ТП"""
@@ -593,7 +624,8 @@ def handle_reactivation_name_input(text, user_id, db):
     tp_name = state.get("tp")
     db["admin_state"] = {}
 
-    partner_name = text.strip()
+    info = extract_partner_info(text)
+    partner_name = info["fio"]
     if not partner_name:
         save_db(db)
         return
@@ -601,10 +633,17 @@ def handle_reactivation_name_input(text, user_id, db):
     # Ищем уже существующие заявки по этому партнёру: активная (не отказ) —
     # блокируем повторную выдачу; отказная — переиспользуем ту же запись
     # (перезатираем данные), чтобы не плодить дубли при повторной попытке.
+    # RT-код надёжнее имени (не зависит от написания) — сверяем в первую
+    # очередь по нему, если он есть; иначе — по имени.
     existing_active = None
     existing_declined_id = None
     for rid, req in db.get("reactivation", {}).items():
-        if req.get("partner", "").strip().lower() != partner_name.lower():
+        same = False
+        if info["rt_code"] and req.get("rt_code"):
+            same = req["rt_code"] == info["rt_code"]
+        else:
+            same = req.get("partner", "").strip().lower() == partner_name.lower()
+        if not same:
             continue
         if req.get("status") != "tp_declined":
             existing_active = req
@@ -620,48 +659,43 @@ def handle_reactivation_name_input(text, user_id, db):
             "tracking": "закреплён и отслеживается",
         }.get(existing_active.get("status"), existing_active.get("status"))
         send_message(
-            f"⚠️ Партнёр «{partner_name}» уже был отдан <b>{clean_tp_name(existing_active['tp'])}</b> "
-            f"(статус: {status_label}) — повторно выдать нельзя, пока по нему нет отказа.",
+            f"⚠️ Партнёр уже был отдан <b>{clean_tp_name(existing_active['tp'])}</b> "
+            f"(статус: {status_label}) — повторно выдать нельзя, пока по нему нет отказа:\n{info['full']}",
             chat_id=user_id
         )
         return
 
+    new_record = {
+        "partner": partner_name,
+        "partner_full": info["full"],
+        "phone": info["phone"],
+        "rt_code": info["rt_code"],
+        "tp": tp_name,
+        "status": "pending_tp",       # pending_tp -> tp_agreed/tp_declined -> tracking
+        "assigned_at": now_msk().isoformat(),
+        "closed_at": None,
+        "revived": False,
+        "notified_status": "none",    # "none" | "not_revived" | "revived" — дедуп уведомлений
+        "last_touched_at": now_msk().isoformat(),  # когда последний раз что-то произошло — от этого считаем напоминание
+        "reminded": False,
+    }
     if existing_declined_id:
         # Повторная попытка по ранее отказавшему партнёру — перезаписываем
         # старую запись новыми данными вместо создания дубля.
         req_id = existing_declined_id
-        db["reactivation"][req_id] = {
-            "partner": partner_name,
-            "tp": tp_name,
-            "status": "pending_tp",
-            "assigned_at": now_msk().isoformat(),
-            "closed_at": None,
-            "revived": False,
-            "notified_status": "none",
-            "last_touched_at": now_msk().isoformat(),
-            "reminded": False,
-        }
+        db["reactivation"][req_id] = new_record
     else:
         req_id = uuid.uuid4().hex[:10]
-        db.setdefault("reactivation", {})[req_id] = {
-            "partner": partner_name,
-            "tp": tp_name,
-            "status": "pending_tp",       # pending_tp -> tp_agreed/tp_declined -> tracking
-            "assigned_at": now_msk().isoformat(),
-            "closed_at": None,
-            "revived": False,
-            "notified_status": "none",    # "none" | "not_revived" | "revived" — дедуп уведомлений
-            "last_touched_at": now_msk().isoformat(),  # когда последний раз что-то произошло — от этого считаем напоминание
-            "reminded": False,
-        }
+        db.setdefault("reactivation", {})[req_id] = new_record
     save_db(db)
 
+    partner_display = info["full"]  # полная карточка — торговому нужен телефон, чтобы реально прозвонить
     contact = db.get("tp_contacts", {}).get(tp_name)
     if contact and contact.get("id"):
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         payload = {
             "chat_id": contact["id"],
-            "text": f"🎯 Валера даёт тебе на отработку партнёра: <b>{partner_name}</b>\n\nПрозвони/съезди и отметь результат:",
+            "text": f"🎯 Валера даёт тебе на отработку партнёра:\n<b>{partner_display}</b>\n\nПрозвони/съезди и отметь результат:",
             "reply_markup": {"inline_keyboard": [[
                 {"text": "✅ Договорился", "callback_data": f"react:{req_id}:agree"},
                 {"text": "❌ Отказ", "callback_data": f"react:{req_id}:decline"},
@@ -673,10 +707,10 @@ def handle_reactivation_name_input(text, user_id, db):
             requests.post(url, json=payload, timeout=10)
         except Exception as e:
             logging.error(f"handle_reactivation_name_input notify error: {e}")
-        send_message(f"✅ Отправил {clean_tp_name(tp_name)} партнёра «{partner_name}».", chat_id=user_id)
+        send_message(f"✅ Отправил {clean_tp_name(tp_name)} партнёра:\n{partner_display}", chat_id=user_id)
     else:
         send_message(
-            f"⚠️ {clean_tp_name(tp_name)} ещё не зарегистрирован в боте — не смог отправить «{partner_name}». "
+            f"⚠️ {clean_tp_name(tp_name)} ещё не зарегистрирован в боте — не смог отправить:\n{partner_display}\n\n"
             f"Запись сохранил, отправь ему сам, что ты решил, чтобы он написал /start боту.",
             chat_id=user_id
         )
@@ -779,7 +813,7 @@ def handle_reactivation_admin_confirm_callback(callback_query):
     tp_contact = db.get("tp_contacts", {}).get(req["tp"])
     if tp_contact and tp_contact.get("id"):
         send_message(
-            f"📌 Партнёр «{req['partner']}» закреплён за тобой. Валера будет следить за динамикой.",
+            f"📌 Партнёр закреплён за тобой. Валера будет следить за динамикой:\n{req.get('partner_full', req['partner'])}",
             chat_id=tp_contact["id"]
         )
 
@@ -793,7 +827,12 @@ def reconcile_reactivations(db, cur_key):
     reactivation = db.get("reactivation", {})
     if not reactivation:
         return
-    month_partners = {p.get("r", "").strip(): p for p in db["months"].get(cur_key, {}).get("partners", [])}
+    month_partners = {norm_name(p.get("r", "")): p for p in db["months"].get(cur_key, {}).get("partners", [])}
+    month_partners_by_rt = {
+        p.get("rt", "").strip().upper(): p
+        for p in db["months"].get(cur_key, {}).get("partners", [])
+        if p.get("rt", "").strip()
+    }
     changed = False
     not_revived_by_tp = {}  # {tp_name: [partner_names]}
 
@@ -802,7 +841,12 @@ def reconcile_reactivations(db, cur_key):
             continue
         partner = req["partner"]
         tp_name = req["tp"]
-        p = month_partners.get(partner)
+        # RT-код надёжнее имени (не ломается от разного написания/копирования
+        # лишнего текста) — сверяем по нему в первую очередь, если он есть.
+        rt_code = req.get("rt_code", "").strip().upper()
+        p = month_partners_by_rt.get(rt_code) if rt_code else None
+        if p is None:
+            p = month_partners.get(norm_name(partner))
         acts = p.get("acts", 0) if p else 0
         contact = db.get("tp_contacts", {}).get(tp_name)
 
@@ -816,18 +860,18 @@ def reconcile_reactivations(db, cur_key):
             if req.get("notified_status") != "revived":
                 req["notified_status"] = "revived"
                 if contact and contact.get("id"):
-                    send_message(f"🎉 Ура, партнёр <b>{partner}</b> ожил — {acts} акт. в этом месяце! Отличная работа!", chat_id=contact["id"])
+                    send_message(f"🎉 Ура, партнёр ожил — {acts} акт. в этом месяце! Отличная работа!\n{req.get('partner_full', partner)}", chat_id=contact["id"])
                 send_message(f"🎉 У <b>{clean_tp_name(tp_name)}</b> ожил партнёр {partner} — {acts} акт.!", chat_id=OWNER_ID)
         elif acts == 0 and not req.get("revived"):
-            not_revived_by_tp.setdefault(tp_name, []).append(partner)
+            not_revived_by_tp.setdefault(tp_name, []).append(req.get("partner_full", partner))
 
     for tp_name, names in not_revived_by_tp.items():
         contact = db.get("tp_contacts", {}).get(tp_name)
-        names_list = "\n".join(f"• {n}" for n in names)
+        names_list = "\n\n".join(f"• {n}" for n in names)
         if contact and contact.get("id"):
             word = "партнёр" if len(names) == 1 else "партнёры"
             send_message(
-                f"😴 Ещё не ожил{'и' if len(names)>1 else ''} {word} за тобой:\n{names_list}",
+                f"😴 Ещё не ожил{'и' if len(names)>1 else ''} {word} за тобой:\n\n{names_list}",
                 chat_id=contact["id"]
             )
 
@@ -1879,13 +1923,14 @@ def check_reactivation_reminders():
                 continue
 
             partner = req["partner"]
+            partner_display = req.get("partner_full", partner)
             tp_display = clean_tp_name(req["tp"])
             contact = db.get("tp_contacts", {}).get(req["tp"])
             if contact and contact.get("id"):
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
                 payload = {
                     "chat_id": contact["id"],
-                    "text": f"⏰ Напоминаю про партнёра <b>{partner}</b> — до сих пор нет финального результата. "
+                    "text": f"⏰ Напоминаю про партнёра — до сих пор нет финального результата:\n<b>{partner_display}</b>\n\n"
                             f"Отметь, пожалуйста, результат:",
                     "reply_markup": {"inline_keyboard": [[
                         {"text": "✅ Договорился", "callback_data": f"react:{req_id}:agree"},
@@ -2505,6 +2550,9 @@ def reactivation_stats():
             "id": req_id,
             "tp": clean_tp_name(req.get("tp", "")),
             "partner": req.get("partner", ""),
+            "partner_full": req.get("partner_full", req.get("partner", "")),
+            "phone": req.get("phone", ""),
+            "rt_code": req.get("rt_code", ""),
             "status": status,
             "status_label": STATUS_LABELS.get(status, status),
             "tracked": status == "tracking",

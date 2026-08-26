@@ -2624,6 +2624,43 @@ def setup_bot_commands():
     except Exception as e:
         logging.error(f"setup_bot_commands owner error: {e}")
 
+def migrate_reactivation_records():
+    """Одноразовая (но безопасно повторяемая при каждом рестарте) чистка
+    старых записей реактивации, созданных до того, как бот научился
+    вытаскивать чистое ФИО/телефон/RT-код из карточки партнёра. Раньше
+    в поле 'partner' могла целиком осесть вся карточка ('ФИО\\nтелефон /
+    RT-код\\nИсточник') — из-за этого имя не совпадало с колонкой в отчёте
+    по активациям. Разбираем заново то, что уже сохранено, без участия
+    владельца и без повторной выдачи партнёров торговым."""
+    try:
+        db = load_db()
+        reactivation = db.get("reactivation", {})
+        if not reactivation:
+            return
+        changed = False
+        for req in reactivation.values():
+            raw = req.get("partner_full") or req.get("partner", "")
+            info = extract_partner_info(raw)
+            if not info["fio"]:
+                continue
+            if req.get("partner") != info["fio"]:
+                req["partner"] = info["fio"]
+                changed = True
+            if not req.get("partner_full"):
+                req["partner_full"] = info["full"]
+                changed = True
+            if not req.get("phone") and info["phone"]:
+                req["phone"] = info["phone"]
+                changed = True
+            if not req.get("rt_code") and info["rt_code"]:
+                req["rt_code"] = info["rt_code"]
+                changed = True
+        if changed:
+            save_db(db)
+            logging.info("Reactivation records migrated (cleaned old dirty names)")
+    except Exception as e:
+        logging.error(f"migrate_reactivation_records error: {e}")
+
 @app.route("/setup-webhook")
 def setup_webhook_endpoint():
     """Ручная перерегистрация webhook, на случай если авторегистрация при старте не сработала"""
@@ -2639,6 +2676,7 @@ def setup_webhook_endpoint():
 # из-за чего webhook приходилось регистрировать руками после каждого рестарта).
 setup_webhook()
 setup_bot_commands()
+migrate_reactivation_records()
 
 # Railway по умолчанию крутится в UTC — без явного часового пояса
 # CHECKIN_HOURS считались бы по серверному времени, а не по Москве

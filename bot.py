@@ -40,7 +40,7 @@ REACTIVATION_REMINDER_HOURS = float(os.environ.get("REACTIVATION_REMINDER_HOURS"
 
 # Через сколько дней после "Не дозвонился" напоминать торговому попробовать
 # снова — повторяется (не один раз), пока статус не сменится на другой
-NO_ANSWER_REMINDER_DAYS = float(os.environ.get("NO_ANSWER_REMINDER_DAYS", "7"))
+NO_ANSWER_REMINDER_DAYS = float(os.environ.get("NO_ANSWER_REMINDER_DAYS", "3"))
 
 # Во сколько часов (по времени сервера) слать запрос геолокации агентам, через запятую
 CHECKIN_HOURS = os.environ.get("CHECKIN_HOURS", "10,13,16,18")
@@ -2090,7 +2090,7 @@ def check_reactivation_reminders():
             contact = db.get("tp_contacts", {}).get(req["tp"])
 
             if is_no_answer:
-                tp_text = f"📵 Прошла неделя — попробуй ещё раз дозвониться до партнёра:\n<b>{partner_display}</b>"
+                tp_text = f"📵 Попробуй ещё раз дозвониться до партнёра:\n<b>{partner_display}</b>"
                 owner_text_with_contact = (
                     f"⏰ Напомнил <b>{tp_display}</b> попробовать дозвониться до партнёра «{partner}» ещё раз "
                     f"(прошло {NO_ANSWER_REMINDER_DAYS:.0f}+ дней с последней попытки)."

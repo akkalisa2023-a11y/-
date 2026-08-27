@@ -636,6 +636,7 @@ def handle_reactivation_name_input(text, user_id, db):
     # RT-код надёжнее имени (не зависит от написания) — сверяем в первую
     # очередь по нему, если он есть; иначе — по имени.
     existing_active = None
+    existing_active_id = None
     existing_declined_id = None
     for rid, req in db.get("reactivation", {}).items():
         same = False
@@ -647,6 +648,7 @@ def handle_reactivation_name_input(text, user_id, db):
             continue
         if req.get("status") != "tp_declined":
             existing_active = req
+            existing_active_id = rid
             break
         existing_declined_id = rid
 
@@ -658,11 +660,21 @@ def handle_reactivation_name_input(text, user_id, db):
             "tp_agreed": "уже договорились",
             "tracking": "закреплён и отслеживается",
         }.get(existing_active.get("status"), existing_active.get("status"))
-        send_message(
-            f"⚠️ Партнёр уже был отдан <b>{clean_tp_name(existing_active['tp'])}</b> "
-            f"(статус: {status_label}) — повторно выдать нельзя, пока по нему нет отказа:\n{info['full']}",
-            chat_id=user_id
-        )
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": user_id,
+            "text": f"⚠️ Партнёр уже был отдан <b>{clean_tp_name(existing_active['tp'])}</b> "
+                    f"(статус: {status_label}) — повторно выдать нельзя, пока по нему нет отказа:\n{info['full']}\n\n"
+                    f"Если это ошибка (например, отдал не тому) — можно перекрепить на другого торгового:",
+            "parse_mode": "HTML",
+            "reply_markup": {"inline_keyboard": [[
+                {"text": "🔁 Перекрепить на другого", "callback_data": f"reactreassign:{existing_active_id}"}
+            ]]}
+        }
+        try:
+            requests.post(url, json=payload, timeout=10)
+        except Exception as e:
+            logging.error(f"handle_reactivation_name_input duplicate notify error: {e}")
         return
 
     new_record = {
@@ -696,6 +708,7 @@ def handle_reactivation_name_input(text, user_id, db):
         payload = {
             "chat_id": contact["id"],
             "text": f"🎯 Валера даёт тебе на отработку партнёра:\n<b>{partner_display}</b>\n\nПрозвони/съезди и отметь результат:",
+            "parse_mode": "HTML",
             "reply_markup": {"inline_keyboard": [[
                 {"text": "✅ Договорился", "callback_data": f"react:{req_id}:agree"},
                 {"text": "❌ Отказ", "callback_data": f"react:{req_id}:decline"},
@@ -756,7 +769,8 @@ def handle_reactivation_tp_response_callback(callback_query):
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         payload = {
             "chat_id": OWNER_ID,
-            "text": f"✅ <b>{tp_display}</b> → {partner}: договорились!\n\nЗакрепить в отслеживании?",
+            "text": f"✅ <b>{tp_display}</b> → {req.get('partner_full', partner)}: договорились!\n\nЗакрепить в отслеживании?",
+            "parse_mode": "HTML",
             "reply_markup": {"inline_keyboard": [[
                 {"text": "📌 Закрепить", "callback_data": f"reactconfirm:{req_id}"}
             ]]}
@@ -784,6 +798,123 @@ def handle_reactivation_tp_response_callback(callback_query):
                 {"text": "❌ Отказ", "callback_data": f"react:{req_id}:decline"},
             ]])
         send_message(f"⏳ <b>{tp_display}</b> → {partner}: ещё в работе.", chat_id=OWNER_ID)
+
+def handle_reactivation_reassign_callback(callback_query):
+    """Владелец нажал 'Перекрепить на другого' — показываем список ТП
+    (кроме текущего) кнопками, аналогично обычной выдаче."""
+    data_str = callback_query.get("data", "")
+    cq_id = callback_query.get("id", "")
+    from_user = callback_query.get("from", {})
+    user_id = from_user.get("id", "")
+
+    if str(user_id) != str(OWNER_ID):
+        answer_callback_query(cq_id, "Только руководитель может это делать")
+        return
+
+    req_id = data_str[len("reactreassign:"):]
+    db = load_db()
+    req = db.get("reactivation", {}).get(req_id)
+    if not req:
+        answer_callback_query(cq_id, "Запись не найдена (возможно, устарела)")
+        return
+
+    answer_callback_query(cq_id, "Выбери нового торгового")
+    all_names = get_all_tp_names(db)
+    code_map = db.setdefault("tp_name_codes", {})
+    for name in all_names:
+        code_map[tp_name_code(name)] = name
+    save_db(db)
+
+    buttons = [
+        [{"text": clean_tp_name(name), "callback_data": f"reactreassignto:{req_id}:{tp_name_code(name)}"}]
+        for name in all_names if name != req.get("tp")
+    ]
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": user_id,
+        "text": f"🔁 Перекрепляем партнёра на кого?\n{req.get('partner_full', req.get('partner', ''))}",
+        "reply_markup": {"inline_keyboard": buttons}
+    }
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        logging.error(f"handle_reactivation_reassign_callback error: {e}")
+
+def handle_reactivation_reassign_pick_callback(callback_query):
+    """Владелец выбрал нового торгового — переносим запись на него:
+    сбрасываем статус в 'ждёт ответа', уведомляем и старого (что партнёр
+    больше не за ним), и нового (как при обычной выдаче)."""
+    data_str = callback_query.get("data", "")
+    cq_id = callback_query.get("id", "")
+    from_user = callback_query.get("from", {})
+    user_id = from_user.get("id", "")
+
+    if str(user_id) != str(OWNER_ID):
+        answer_callback_query(cq_id, "Только руководитель может это делать")
+        return
+
+    rest = data_str[len("reactreassignto:"):]
+    parts = rest.split(":", 1)
+    if len(parts) != 2:
+        return
+    req_id, code = parts
+
+    db = load_db()
+    req = db.get("reactivation", {}).get(req_id)
+    if not req:
+        answer_callback_query(cq_id, "Запись не найдена (возможно, устарела)")
+        return
+    new_tp = db.get("tp_name_codes", {}).get(code)
+    if not new_tp:
+        answer_callback_query(cq_id, "Торговый не найден")
+        return
+
+    old_tp = req.get("tp")
+    req["tp"] = new_tp
+    req["status"] = "pending_tp"
+    req["assigned_at"] = now_msk().isoformat()
+    req["closed_at"] = None
+    req["revived"] = False
+    req["notified_status"] = "none"
+    req["last_touched_at"] = now_msk().isoformat()
+    req["reminded"] = False
+    save_db(db)
+    answer_callback_query(cq_id, f"Перекрепил на {clean_tp_name(new_tp)}")
+
+    partner_display = req.get("partner_full", req.get("partner", ""))
+
+    old_contact = db.get("tp_contacts", {}).get(old_tp)
+    if old_contact and old_contact.get("id"):
+        send_message(
+            f"↩️ Партнёр переотдан другому торговому — можешь его больше не отрабатывать:\n{partner_display}",
+            chat_id=old_contact["id"]
+        )
+
+    new_contact = db.get("tp_contacts", {}).get(new_tp)
+    if new_contact and new_contact.get("id"):
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": new_contact["id"],
+            "text": f"🎯 Валера даёт тебе на отработку партнёра:\n<b>{partner_display}</b>\n\nПрозвони/съезди и отметь результат:",
+            "parse_mode": "HTML",
+            "reply_markup": {"inline_keyboard": [[
+                {"text": "✅ Договорился", "callback_data": f"react:{req_id}:agree"},
+                {"text": "❌ Отказ", "callback_data": f"react:{req_id}:decline"},
+            ], [
+                {"text": "⏳ Ещё в работе", "callback_data": f"react:{req_id}:progress"},
+            ]]}
+        }
+        try:
+            requests.post(url, json=payload, timeout=10)
+        except Exception as e:
+            logging.error(f"handle_reactivation_reassign_pick_callback notify error: {e}")
+        send_message(f"✅ Перекрепил на {clean_tp_name(new_tp)}:\n{partner_display}", chat_id=user_id)
+    else:
+        send_message(
+            f"⚠️ {clean_tp_name(new_tp)} ещё не зарегистрирован в боте — не смог отправить:\n{partner_display}\n\n"
+            f"Запись перекрепил, отправь ему сам, чтобы он написал /start боту.",
+            chat_id=user_id
+        )
 
 def handle_reactivation_admin_confirm_callback(callback_query):
     """Финальная галочка владельца — с этого момента партнёр официально
@@ -1932,6 +2063,7 @@ def check_reactivation_reminders():
                     "chat_id": contact["id"],
                     "text": f"⏰ Напоминаю про партнёра — до сих пор нет финального результата:\n<b>{partner_display}</b>\n\n"
                             f"Отметь, пожалуйста, результат:",
+                    "parse_mode": "HTML",
                     "reply_markup": {"inline_keyboard": [[
                         {"text": "✅ Договорился", "callback_data": f"react:{req_id}:agree"},
                         {"text": "❌ Отказ", "callback_data": f"react:{req_id}:decline"},
@@ -1996,6 +2128,10 @@ def tg_webhook():
                     handle_reactivation_tp_response_callback(callback_query)
                 elif cq_data.startswith("reactconfirm:"):
                     handle_reactivation_admin_confirm_callback(callback_query)
+                elif cq_data.startswith("reactreassignto:"):
+                    handle_reactivation_reassign_pick_callback(callback_query)
+                elif cq_data.startswith("reactreassign:"):
+                    handle_reactivation_reassign_callback(callback_query)
                 return jsonify({"ok": True})
 
             msg = data.get("message", {})

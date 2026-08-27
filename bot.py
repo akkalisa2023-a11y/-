@@ -38,6 +38,10 @@ REMINDER_HOURS = float(os.environ.get("REMINDER_HOURS", "2"))
 # "Ещё в работе") напоминать торговому, если решения (Договорился/Отказ) всё ещё нет
 REACTIVATION_REMINDER_HOURS = float(os.environ.get("REACTIVATION_REMINDER_HOURS", "24"))
 
+# Через сколько дней после "Не дозвонился" напоминать торговому попробовать
+# снова — повторяется (не один раз), пока статус не сменится на другой
+NO_ANSWER_REMINDER_DAYS = float(os.environ.get("NO_ANSWER_REMINDER_DAYS", "7"))
+
 # Во сколько часов (по времени сервера) слать запрос геолокации агентам, через запятую
 CHECKIN_HOURS = os.environ.get("CHECKIN_HOURS", "10,13,16,18")
 # Дни недели для чек-инов — по умолчанию будни (пн-пт), без выходных.
@@ -657,6 +661,7 @@ def handle_reactivation_name_input(text, user_id, db):
         status_label = {
             "pending_tp": "ждёт ответа торгового",
             "in_progress": "в работе",
+            "no_answer": "не дозвонился, пробует ещё",
             "tp_agreed": "уже договорились",
             "tracking": "закреплён и отслеживается",
         }.get(existing_active.get("status"), existing_active.get("status"))
@@ -714,6 +719,7 @@ def handle_reactivation_name_input(text, user_id, db):
                 {"text": "❌ Отказ", "callback_data": f"react:{req_id}:decline"},
             ], [
                 {"text": "⏳ Ещё в работе", "callback_data": f"react:{req_id}:progress"},
+                {"text": "📵 Не дозвонился", "callback_data": f"react:{req_id}:no_answer"},
             ]]}
         }
         try:
@@ -786,6 +792,20 @@ def handle_reactivation_tp_response_callback(callback_query):
         if msg_chat_id and msg_id:
             clear_inline_keyboard(msg_chat_id, msg_id)
         send_message(f"❌ <b>{tp_display}</b> → {partner}: отказ.", chat_id=OWNER_ID)
+    elif decision == "no_answer":
+        req["status"] = "no_answer"
+        req["last_touched_at"] = now_msk().isoformat()
+        req["reminded"] = False
+        answer_callback_query(cq_id, "Принято, попробуй ещё раз позже")
+        save_db(db)
+        if msg_chat_id and msg_id:
+            set_inline_keyboard(msg_chat_id, msg_id, [[
+                {"text": "✅ Договорился", "callback_data": f"react:{req_id}:agree"},
+                {"text": "❌ Отказ", "callback_data": f"react:{req_id}:decline"},
+            ], [
+                {"text": "⏳ Ещё в работе", "callback_data": f"react:{req_id}:progress"},
+            ]])
+        send_message(f"📵 <b>{tp_display}</b> → {partner}: не дозвонился, пробует ещё.", chat_id=OWNER_ID)
     else:  # progress
         req["status"] = "in_progress"
         req["last_touched_at"] = now_msk().isoformat()
@@ -902,6 +922,7 @@ def handle_reactivation_reassign_pick_callback(callback_query):
                 {"text": "❌ Отказ", "callback_data": f"react:{req_id}:decline"},
             ], [
                 {"text": "⏳ Ещё в работе", "callback_data": f"react:{req_id}:progress"},
+                {"text": "📵 Не дозвонился", "callback_data": f"react:{req_id}:no_answer"},
             ]]}
         }
         try:
@@ -2003,7 +2024,7 @@ def build_reactivation_stats(db):
     reactivation = db.get("reactivation", {})
     total = {
         "given": 0, "agreed": 0, "declined": 0,
-        "in_progress": 0, "pending": 0, "tracking": 0, "revived": 0,
+        "in_progress": 0, "no_answer": 0, "pending": 0, "tracking": 0, "revived": 0,
     }
     by_tp = {}
 
@@ -2019,6 +2040,8 @@ def build_reactivation_stats(db):
                 bucket["declined"] += 1
             elif status == "in_progress":
                 bucket["in_progress"] += 1
+            elif status == "no_answer":
+                bucket["no_answer"] += 1
             elif status == "pending_tp":
                 bucket["pending"] += 1
             elif status == "tracking":
@@ -2029,10 +2052,12 @@ def build_reactivation_stats(db):
     return total, by_tp
 
 def check_reactivation_reminders():
-    """Раз в N минут проверяет партнёров на отработке, по которым торговый
-    так и не нажал финальную кнопку (Договорился/Отказ) дольше
-    REACTIVATION_REMINDER_HOURS — напоминает торговому и сигналит владельцу,
-    чтобы партнёр не потерялся в общем списке."""
+    """Раз в N минут проверяет партнёров на отработке:
+    - pending_tp/in_progress без решения дольше REACTIVATION_REMINDER_HOURS —
+      напоминаем один раз (обычный сценарий "не забыл ли ты про партнёра").
+    - no_answer ("не дозвонился") — это не отказ, просто пока не вышло
+      связаться, поэтому напоминание повторяется каждые NO_ANSWER_REMINDER_DAYS
+      дней ("попробуй ещё раз"), а не один раз — пока статус не сменится."""
     try:
         db = load_db()
         reactivation = db.get("reactivation", {})
@@ -2041,52 +2066,78 @@ def check_reactivation_reminders():
         now = now_msk()
         changed = False
         for req_id, req in reactivation.items():
-            if req.get("status") not in ("pending_tp", "in_progress"):
+            status = req.get("status")
+            if status not in ("pending_tp", "in_progress", "no_answer"):
                 continue
-            if req.get("reminded"):
+
+            is_no_answer = status == "no_answer"
+            # Для no_answer напоминание повторяется — не блокируем флагом "reminded"
+            if not is_no_answer and req.get("reminded"):
                 continue
+
             touched_at = req.get("last_touched_at") or req.get("assigned_at")
             try:
                 since = datetime.fromisoformat(touched_at)
             except Exception:
                 continue
-            if now - since < timedelta(hours=REACTIVATION_REMINDER_HOURS):
+            threshold = timedelta(days=NO_ANSWER_REMINDER_DAYS) if is_no_answer else timedelta(hours=REACTIVATION_REMINDER_HOURS)
+            if now - since < threshold:
                 continue
 
             partner = req["partner"]
             partner_display = req.get("partner_full", partner)
             tp_display = clean_tp_name(req["tp"])
             contact = db.get("tp_contacts", {}).get(req["tp"])
+
+            if is_no_answer:
+                tp_text = f"📵 Прошла неделя — попробуй ещё раз дозвониться до партнёра:\n<b>{partner_display}</b>"
+                owner_text_with_contact = (
+                    f"⏰ Напомнил <b>{tp_display}</b> попробовать дозвониться до партнёра «{partner}» ещё раз "
+                    f"(прошло {NO_ANSWER_REMINDER_DAYS:.0f}+ дней с последней попытки)."
+                )
+                owner_text_no_contact = (
+                    f"⏰ Партнёр «{partner}» у <b>{tp_display}</b> так и не дозвонился "
+                    f"{NO_ANSWER_REMINDER_DAYS:.0f}+ дней, а связаться с ним самим не вышло — напомни сам."
+                )
+            else:
+                tp_text = f"⏰ Напоминаю про партнёра — до сих пор нет финального результата:\n<b>{partner_display}</b>\n\nОтметь, пожалуйста, результат:"
+                owner_text_with_contact = (
+                    f"⏰ Напомнил <b>{tp_display}</b> про партнёра «{partner}» — висит без решения "
+                    f"уже {REACTIVATION_REMINDER_HOURS:.0f}ч+."
+                )
+                owner_text_no_contact = (
+                    f"⏰ Партнёр «{partner}» у <b>{tp_display}</b> висит без решения "
+                    f"{REACTIVATION_REMINDER_HOURS:.0f}ч+, а связаться с ним в личку не вышло — напомни сам."
+                )
+
             if contact and contact.get("id"):
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
                 payload = {
                     "chat_id": contact["id"],
-                    "text": f"⏰ Напоминаю про партнёра — до сих пор нет финального результата:\n<b>{partner_display}</b>\n\n"
-                            f"Отметь, пожалуйста, результат:",
+                    "text": tp_text,
                     "parse_mode": "HTML",
                     "reply_markup": {"inline_keyboard": [[
                         {"text": "✅ Договорился", "callback_data": f"react:{req_id}:agree"},
                         {"text": "❌ Отказ", "callback_data": f"react:{req_id}:decline"},
                     ], [
                         {"text": "⏳ Ещё в работе", "callback_data": f"react:{req_id}:progress"},
+                        {"text": "📵 Не дозвонился", "callback_data": f"react:{req_id}:no_answer"},
                     ]]}
                 }
                 try:
                     requests.post(url, json=payload, timeout=10)
                 except Exception as e:
                     logging.error(f"check_reactivation_reminders tp notify error: {e}")
-                send_message(
-                    f"⏰ Напомнил <b>{tp_display}</b> про партнёра «{partner}» — висит без решения "
-                    f"уже {REACTIVATION_REMINDER_HOURS:.0f}ч+.",
-                    chat_id=OWNER_ID
-                )
+                send_message(owner_text_with_contact, chat_id=OWNER_ID)
             else:
-                send_message(
-                    f"⏰ Партнёр «{partner}» у <b>{tp_display}</b> висит без решения "
-                    f"{REACTIVATION_REMINDER_HOURS:.0f}ч+, а связаться с ним в личку не вышло — напомни сам.",
-                    chat_id=OWNER_ID
-                )
-            req["reminded"] = True
+                send_message(owner_text_no_contact, chat_id=OWNER_ID)
+
+            if is_no_answer:
+                # Повторяющееся напоминание — сдвигаем точку отсчёта на "сейчас",
+                # чтобы следующее напоминание пришло ровно через NO_ANSWER_REMINDER_DAYS
+                req["last_touched_at"] = now.isoformat()
+            else:
+                req["reminded"] = True
             changed = True
         if changed:
             save_db(db)
@@ -2644,7 +2695,7 @@ def dedupe_reactivation():
     db = load_db()
     reactivation = db.get("reactivation", {})
 
-    priority = {"tracking": 4, "tp_agreed": 3, "in_progress": 2, "pending_tp": 1, "tp_declined": 0}
+    priority = {"tracking": 5, "tp_agreed": 4, "in_progress": 3, "no_answer": 2, "pending_tp": 1, "tp_declined": 0}
     groups = {}
     for rid, req in reactivation.items():
         key = req.get("partner", "").strip().lower()
@@ -2674,6 +2725,7 @@ def reactivation_stats():
     STATUS_LABELS = {
         "pending_tp": "Без ответа",
         "in_progress": "В работе",
+        "no_answer": "Не дозвонился",
         "tp_agreed": "Договорились",
         "tp_declined": "Отказ",
         "tracking": "Договорились",  # закреплено = уже было "Договорился", просто дальше отслеживаем

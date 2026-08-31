@@ -631,6 +631,7 @@ function processActivations(headers, rows){
   let added=0;
   const today=new Date();
   const curM=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`;
+  const todayStr=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
   Object.entries(byM).forEach(([m,acts])=>{
     // Разрешаем перезаписывать любой месяц из загружаемого файла
     const tpMap={}, prMap={}, ops={};
@@ -666,7 +667,15 @@ function processActivations(headers, rows){
     if(lastDate) {
       const [y,mo,d] = lastDate.split('-').map(Number);
       const daysInMonth = new Date(y, mo, 0).getDate();
-      const daysPassed = d;
+      let daysPassed = d;
+      // Если последняя дата с данными — сегодня, эти сутки ещё не закончились.
+      // Без этого к вечеру последнего дня месяца daysPassed совпадает с
+      // daysInMonth, и прогноз "запирается" на факте (100% раньше времени).
+      // Берём реально прошедшую долю текущих суток вместо целого дня.
+      if (lastDate === todayStr) {
+        const fracToday = Math.max((today.getHours()*60 + today.getMinutes()) / (24*60), 0.05);
+        daysPassed = (d - 1) + fracToday;
+      }
       const total = acts.length;
       forecast = Math.round(total / daysPassed * daysInMonth);
     }
@@ -933,8 +942,14 @@ function renderTPTab(d,dp,pv){
   let daysPassed = null, daysInMonth = null;
   if (d.last_date) {
     const [y,mo,day] = d.last_date.split('-').map(Number);
-    daysPassed = day;
     daysInMonth = new Date(y, mo, 0).getDate();
+    daysPassed = day;
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    if (d.last_date === todayStr) {
+      const fracToday = Math.max((now.getHours()*60 + now.getMinutes()) / (24*60), 0.05);
+      daysPassed = (day - 1) + fracToday;
+    }
   }
   const forecastFor = t => (daysPassed && daysInMonth) ? Math.round(t.acts / daysPassed * daysInMonth) : t.acts;
 
@@ -982,8 +997,14 @@ function buildPRAll(partners, prevPartners, lastDate){
   let daysPassed=null, daysInMonth=null;
   if (lastDate) {
     const [y,mo,day] = lastDate.split('-').map(Number);
-    daysPassed = day;
     daysInMonth = new Date(y, mo, 0).getDate();
+    daysPassed = day;
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    if (lastDate === todayStr) {
+      const fracToday = Math.max((now.getHours()*60 + now.getMinutes()) / (24*60), 0.05);
+      daysPassed = (day - 1) + fracToday;
+    }
   }
   return partners.map(p=>{
     const forecast = (daysPassed && daysInMonth) ? Math.round(p.acts / daysPassed * daysInMonth) : p.acts;
@@ -1172,11 +1193,12 @@ function sw(id,el){
 // ── РЕАКТИВАЦИЯ ПАРТНЁРОВ ───────────────────────────────────
 
 const RC_STATUS_STYLE = {
-  'pending_tp':  {label:'⌛ Без ответа',   cls:''},
-  'in_progress': {label:'⏳ В работе',      cls:''},
-  'tp_agreed':   {label:'✅ Договорились',  cls:'up'},
-  'tp_declined': {label:'❌ Отказ',         cls:'dn'},
-  'tracking':    {label:'✅ Договорились',  cls:'up'},
+  'pending_tp':  {label:'⌛ Без ответа',      cls:''},
+  'in_progress': {label:'⏳ В работе',         cls:''},
+  'no_answer':   {label:'📵 Не дозвонился',   cls:''},
+  'tp_agreed':   {label:'✅ Договорились',     cls:'up'},
+  'tp_declined': {label:'❌ Отказ',            cls:'dn'},
+  'tracking':    {label:'✅ Договорились',     cls:'up'},
 };
 
 async function loadReactivation(){
@@ -1194,14 +1216,15 @@ async function loadReactivation(){
 function renderReactivationSummary(t){
   const el = document.getElementById('rc-summary');
   if (!t) { el.innerHTML = ''; return; }
-  const noAnswer = t.pending;
-  const noAnswerColor = noAnswer > 0 ? 'color:#e67828' : '';
+  const noResponse = t.pending;
+  const noResponseColor = noResponse > 0 ? 'color:#e67828' : '';
   el.innerHTML = `
     <div class="kc"><div class="kl">Передано в работу</div><div class="kv">${t.given}</div><div class="ks">&nbsp;</div></div>
     <div class="kc"><div class="kl">✅ Договорились</div><div class="kv">${t.agreed + t.tracking}</div><div class="ks">&nbsp;</div></div>
     <div class="kc"><div class="kl">❌ Отказ</div><div class="kv">${t.declined}</div><div class="ks">&nbsp;</div></div>
-    <div class="kc"><div class="kl">⌛ Без ответа</div><div class="kv" style="${noAnswerColor}">${noAnswer}</div><div class="ks">&nbsp;</div></div>
+    <div class="kc"><div class="kl">⌛ Без ответа</div><div class="kv" style="${noResponseColor}">${noResponse}</div><div class="ks">&nbsp;</div></div>
     <div class="kc"><div class="kl">⏳ Ещё в работе</div><div class="kv">${t.in_progress}</div><div class="ks">&nbsp;</div></div>
+    <div class="kc"><div class="kl">📵 Не дозвонился</div><div class="kv">${t.no_answer||0}</div><div class="ks">&nbsp;</div></div>
     <div class="kc"><div class="kl">🎉 Реально ожило</div><div class="kv" style="color:var(--mint)">${t.revived}</div><div class="ks">${t.tracking?Math.round(t.revived/t.tracking*100):0}% от закреплённых</div></div>
   `;
 }

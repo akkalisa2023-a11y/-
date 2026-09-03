@@ -123,6 +123,23 @@ def check_auth():
 
 # ── СОПОСТАВЛЕНИЕ ИМЁН ТП ↔ TELEGRAM ────────────────────────
 
+def days_passed_for_forecast(last_date_str):
+    """Считает, сколько суток месяца реально прошло — для формулы
+    прогноза (факт / дней_прошло × дней_в_месяце). Если last_date — это
+    сегодня, сутки ещё не закончились: без этого на последнем дне месяца
+    day == days_in_month, и прогноз "запирается" на факте (100% раньше
+    времени). Возвращает (days_passed, days_in_month) или (None, None)."""
+    if not last_date_str:
+        return None, None
+    y, mo, d = (int(x) for x in last_date_str.split("-"))
+    days_in_month = calendar.monthrange(y, mo)[1]
+    days_passed = float(d)
+    today = now_msk()
+    if today.year == y and today.month == mo and today.day == d:
+        frac_today = max((today.hour * 60 + today.minute) / (24 * 60), 0.05)
+        days_passed = (d - 1) + frac_today
+    return days_passed, days_in_month
+
 def norm_name(name):
     """Нормализует ФИО партнёра для сравнения: нижний регистр + схлопывает
     лишние пробелы. Без этого 'Солтаев Умар' и 'СОЛТАЕВ УМАР' (или с двойным
@@ -1749,7 +1766,7 @@ def build_fraud_callout(tp_list, threshold_pct=15, threshold_abs=10, show_transf
 def get_drop_offenders(tp_list_cur, tp_list_prev, last_date=None, days_in_month=None, threshold_pct=20):
     if not tp_list_prev:
         return []
-    day = int(last_date.split("-")[2]) if last_date else None
+    days_passed, days_in_month_calc = days_passed_for_forecast(last_date)
     prev_map = {t['name']: t['acts'] for t in tp_list_prev}
     offenders = []
     for t in tp_list_cur:
@@ -1761,8 +1778,8 @@ def get_drop_offenders(tp_list_cur, tp_list_prev, last_date=None, days_in_month=
         # Сравниваем не "факт на сегодня" с "фактом за весь прошлый месяц" (это всегда
         # выглядит как обвал в начале месяца), а прогнозируемый темп ТП на весь месяц —
         # тем же способом, каким считается общий прогноз по компании.
-        if day and days_in_month and day > 0:
-            forecast_acts = round(t['acts'] / day * days_in_month)
+        if days_passed and days_in_month_calc and days_passed > 0:
+            forecast_acts = round(t['acts'] / days_passed * days_in_month_calc)
         else:
             forecast_acts = t['acts']
         diff = forecast_acts - prev
@@ -1852,10 +1869,10 @@ def build_public_praise(tp_list, has_bad=False, last_date=None, days_in_month=No
     if not candidates:
         return None
 
-    day = int(last_date.split("-")[2]) if last_date else None
+    days_passed, days_in_month_calc = days_passed_for_forecast(last_date)
     def forecast_for(t):
-        if day and days_in_month and day > 0:
-            return round(t['acts'] / day * days_in_month)
+        if days_passed and days_in_month_calc and days_passed > 0:
+            return round(t['acts'] / days_passed * days_in_month_calc)
         return t['acts']
 
     top = max(candidates, key=forecast_for)

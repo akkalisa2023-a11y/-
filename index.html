@@ -584,6 +584,19 @@ async function loadFile(input,type){
   input.value='';
 }
 
+function moscowNow(){
+  // Возвращает текущее время по Москве, независимо от часового пояса устройства —
+  // иначе прогноз в дашборде (браузер) и в боте (сервер, жёстко Europe/Moscow)
+  // считались бы по-разному, если у пользователя другой часовой пояс.
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Europe/Moscow', hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  }).formatToParts(new Date());
+  const get = t => parts.find(p => p.type === t).value;
+  return new Date(`${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}`);
+}
+
 function colIdx(h,n){
   // Exact match first
   let i = h.findIndex(x=>x&&String(x).trim()===n);
@@ -629,14 +642,15 @@ function processActivations(headers, rows){
   });
   const stored=JSON.parse(localStorage.getItem('as_dash_v4'));
   let added=0;
-  const today=new Date();
+  const today=moscowNow();
   const curM=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`;
   const todayStr=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
   Object.entries(byM).forEach(([m,acts])=>{
     // Разрешаем перезаписывать любой месяц из загружаемого файла
     const tpMap={}, prMap={}, ops={};
+    let unassigned=0;
     acts.forEach(a=>{
-      if(!a.r||!a.t)return;
+      if(!a.r||!a.t){unassigned++;return;}
       if(!tpMap[a.t])tpMap[a.t]={name:a.t,acts:0,fraud:0,parts:new Set()};
       tpMap[a.t].acts++; if(a.fraud)tpMap[a.t].fraud++;
       tpMap[a.t].parts.add(a.r);
@@ -684,13 +698,18 @@ function processActivations(headers, rows){
       p3:vals.filter(v=>v>=3).length,p10:vals.filter(v=>v>=10).length,
       avg:+(acts.length/Object.keys(actsByR).length).toFixed(1),
       fraud:ft,fraud_pct:+(ft/acts.length*100).toFixed(1),
-      forecast, last_date: lastDate,
+      forecast, last_date: lastDate, unassigned,
       tp:tpList,partners:prList,ops};
     added++;
   });
   localStorage.setItem('as_dash_v4',JSON.stringify(stored));
   DB=stored;
-  toast(`✅ Добавлено/обновлено: ${added} мес.`);
+  const totalUnassigned = Object.values(stored.months).reduce((s,mo)=>s+(mo.unassigned||0),0);
+  if (totalUnassigned > 0) {
+    toast(`⚠️ Добавлено ${added} мес., но ${totalUnassigned} акт. без Торгового/Ритейла в файле — не попали в разбивку по людям`);
+  } else {
+    toast(`✅ Добавлено/обновлено: ${added} мес.`);
+  }
   localStorage.setItem('as_dash_v4', JSON.stringify(stored));
   DB = stored;
   renderMonthBtns(); render();
@@ -837,6 +856,7 @@ function renderKPI(d,dp,pv){
     <div class="kc"><div class="kl">Партнёров 10+</div><div class="kv">${d.p10}</div><div class="ks">${Math.round(d.p10/d.ap*100)}% от активных</div></div>
     <div class="kc fraud-card"><div class="kl">🚨 Фрод активаций</div><div class="kv ${fraudCls}">${d.fraud||0}</div><div class="ks dn">${fraudPct}% от всех</div></div>
     <div class="kc"><div class="kl">Ср. акт. / партнёр</div><div class="kv">${d.avg}</div><div class="ks">${dp?`vs ${dp.avg} пред.`:'&nbsp;'}</div></div>
+    ${d.unassigned ? `<div class="kc" style="border-color:rgba(230,120,40,.4)"><div class="kl">⚠️ Без Торгового/Ритейла</div><div class="kv" style="color:#e67828">${d.unassigned}</div><div class="ks">не попали в разбивку по людям</div></div>` : ''}
   `;
 }
 
@@ -944,7 +964,7 @@ function renderTPTab(d,dp,pv){
     const [y,mo,day] = d.last_date.split('-').map(Number);
     daysInMonth = new Date(y, mo, 0).getDate();
     daysPassed = day;
-    const now = new Date();
+    const now = moscowNow();
     const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
     if (d.last_date === todayStr) {
       const fracToday = Math.max((now.getHours()*60 + now.getMinutes()) / (24*60), 0.05);
@@ -999,7 +1019,7 @@ function buildPRAll(partners, prevPartners, lastDate){
     const [y,mo,day] = lastDate.split('-').map(Number);
     daysInMonth = new Date(y, mo, 0).getDate();
     daysPassed = day;
-    const now = new Date();
+    const now = moscowNow();
     const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
     if (lastDate === todayStr) {
       const fracToday = Math.max((now.getHours()*60 + now.getMinutes()) / (24*60), 0.05);

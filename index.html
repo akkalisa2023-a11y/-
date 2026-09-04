@@ -584,6 +584,13 @@ async function loadFile(input,type){
   input.value='';
 }
 
+function normName(s){
+  // Нормализует имя для сравнения: нижний регистр + схлопывает лишние
+  // пробелы — та же логика, что и в боте (norm_name), чтобы "Адамов Г."
+  // и "адамов  г." считались одним и тем же при сравнении X с U.
+  return String(s||'').split(/\s+/).filter(Boolean).join(' ').toLowerCase();
+}
+
 function moscowNow(){
   // Возвращает текущее время по Москве, независимо от часового пояса устройства —
   // иначе прогноз в дашборде (браузер) и в боте (сервер, жёстко Europe/Moscow)
@@ -724,7 +731,16 @@ function processPrivl(headers,rows){
   const iN=colIdx(headers,'Имя сотрудника создавшего');
   const iT=colIdx(headers,'Как создан');
   const iD=colIdx(headers,'Дата создания');
-  const iU=colIdx(headers,'Имя пользователя');
+  // Определение "уникальный/субдилер" для УВЕДОМЛЕНИЙ идёт не через колонку
+  // "Как создан" (в этом отчёте заголовки дублируются, поиск по имени
+  // ненадёжен) — а через сравнение столбцов по ПОЗИЦИИ:
+  //   U (индекс 20) — ТП, за которым числится вся цепочка целиком
+  //   X (индекс 23) — прямой создатель этой конкретной записи: если он
+  //                   совпадает с U — торговый привёл сам ("уникальный",
+  //                   уведомлять не нужно); если отличается — это партнёр,
+  //                   который привёл нового субдилера
+  //   AA (индекс 26) — имя нового привлечённого (субдилера)
+  const iTP=20, iDirectCreator=23, iNewName=26;
   if(iN<0||iT<0){
     toast(`❌ Не найдены столбцы привлечения`);
     return;
@@ -733,7 +749,9 @@ function processPrivl(headers,rows){
   // Группируем по месяцам через "Дата создания"
   // Перезаписываем ТОЛЬКО те месяцы что есть в файле — остальные не трогаем
   const byMonth={};
-  const subdealers=[]; // {torgovy, name} — для уведомлений о новых субдилерах
+  const subdealers=[]; // {tp, creator, name} — для уведомлений о новых субдилерах.
+  // tp/creator/name берём из U/X/AA напрямую (не ищем по активациям —
+  // партнёр может быть только что привлечён и ещё ничего не активировал).
   rows.forEach(r=>{
     const n=String(r[iN]||'').trim();
     const t=String(r[iT]||'').trim();
@@ -744,10 +762,13 @@ function processPrivl(headers,rows){
     if(!byMonth[m][n]) byMonth[m][n]={n,v:0,u:0,s:0};
     byMonth[m][n].v++;
     if(t==='Уникальный') byMonth[m][n].u++;
-    if(t==='Субдилер') {
-      byMonth[m][n].s++;
-      const userName = iU>=0 ? String(r[iU]||'').trim() : '';
-      if(userName) subdealers.push({torgovy: n, name: userName});
+    if(t==='Субдилер') byMonth[m][n].s++;
+
+    const tp = String(r[iTP]||'').trim();
+    const directCreator = String(r[iDirectCreator]||'').trim();
+    const newName = String(r[iNewName]||'').trim();
+    if(tp && directCreator && newName && normName(directCreator)!==normName(tp)){
+      subdealers.push({tp, creator: directCreator, name: newName});
     }
   });
 

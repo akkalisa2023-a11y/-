@@ -25,7 +25,7 @@ CORS(app)
 BOT_TOKEN     = os.environ.get("BOT_TOKEN", "YOUR_TOKEN_HERE")
 CHAT_ID       = os.environ.get("CHAT_ID", "YOUR_CHAT_ID")
 DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "https://ваш-дашборд.com")
-API_SECRET    = os.environ.get("API_SECRET", "as_secret_2026")  # вставь свой секрет в Railway
+API_SECRET    = os.environ.get("API_SECRET")  # ОБЯЗАТЕЛЬНО задай своё значение в Railway — без него доступ к защищённым эндпоинтам будет закрыт всем
 OWNER_ID      = os.environ.get("OWNER_ID", "6251390433")  # кому пересылать сообщения торговых и сводки
 
 # Кто исключён из отчёта бота (но остаётся в дашборде)
@@ -118,6 +118,12 @@ def save_db(db):
 # ── AUTH ─────────────────────────────────────────────────────
 
 def check_auth():
+    # Если секрет не задан на сервере (переменная API_SECRET пустая) — доступ
+    # закрыт всегда, даже если кто-то пришлёт пустой заголовок. Раньше был
+    # угадываемый дефолт прямо в открытом коде — в публичном репозитории
+    # это равнялось отсутствию защиты вообще.
+    if not API_SECRET:
+        return False
     secret = request.headers.get("X-API-Secret") or request.args.get("secret")
     return secret == API_SECRET
 

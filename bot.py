@@ -2871,6 +2871,21 @@ def migrate_reactivation_records():
     except Exception as e:
         logging.error(f"migrate_reactivation_records error: {e}")
 
+@app.route("/reset-seen-subdealers", methods=["POST"])
+def reset_seen_subdealers():
+    """Сбрасывает память о том, кому уже отправляли уведомление про суба —
+    на случай, если запись когда-то попала в 'уже видели' из-за старого
+    бага (не находился контакт/ТП), а сама отправка так и не прошла.
+    После сброса следующая заливка отчёта по привлечению пришлёт
+    уведомления заново по всем актуальным записям в файле."""
+    if not check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    db = load_db()
+    count = len(db.get("seen_subdealers", []))
+    db["seen_subdealers"] = []
+    save_db(db)
+    return jsonify({"status": "ok", "cleared": count})
+
 @app.route("/setup-webhook")
 def setup_webhook_endpoint():
     """Ручная перерегистрация webhook, на случай если авторегистрация при старте не сработала"""

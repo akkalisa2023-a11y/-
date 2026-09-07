@@ -371,6 +371,9 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
 <!-- ПРИВЛЕЧЕНИЕ -->
 <div id="tat" style="display:none">
   <div id="privl-month-btns" class="month-btns" style="margin:0 0 14px 0"></div>
+  <div style="text-align:right;margin-bottom:8px">
+    <button class="upload-btn" onclick="resetSeenSubdealers()" style="padding:6px 12px" title="Если уведомление про суба не пришло, хотя всё настроено верно — сбрасывает память бота о том, кому уже сообщали, и следующая заливка отчёта пришлёт уведомления заново по всем актуальным записям">🔄 Сбросить память об уведомлениях по субам</button>
+  </div>
   <div class="kgrid" id="kpi-at"></div>
   <div class="g2">
     <div class="card full">
@@ -749,9 +752,6 @@ function processPrivl(headers,rows){
   // Группируем по месяцам через "Дата создания"
   // Перезаписываем ТОЛЬКО те месяцы что есть в файле — остальные не трогаем
   const byMonth={};
-  const subdealers=[]; // {tp, creator, name} — для уведомлений о новых субдилерах.
-  // tp/creator/name берём из U/X/AA напрямую (не ищем по активациям —
-  // партнёр может быть только что привлечён и ещё ничего не активировал).
   rows.forEach(r=>{
     const n=String(r[iN]||'').trim();
     const t=String(r[iT]||'').trim();
@@ -763,7 +763,17 @@ function processPrivl(headers,rows){
     byMonth[m][n].v++;
     if(t==='Уникальный') byMonth[m][n].u++;
     if(t==='Субдилер') byMonth[m][n].s++;
+  });
 
+  // Отдельный, полностью независимый проход для определения субдилеров —
+  // по позиции колонок (U/X/AA), без всякой зависимости от первого прохода
+  // выше: там строка могла пропускаться из-за колонки "Имя сотрудника
+  // создавшего" (эта же колонка дублируется в файле, и colIdx мог найти
+  // не ту копию) — здесь такого риска нет вообще, ничего не завязано на iN/iT.
+  const subdealers=[]; // {tp, creator, name} — для уведомлений о новых субдилерах.
+  // tp/creator/name берём из U/X/AA напрямую (не ищем по активациям —
+  // партнёр может быть только что привлечён и ещё ничего не активировал).
+  rows.forEach(r=>{
     const tp = String(r[iTP]||'').trim();
     const directCreator = String(r[iDirectCreator]||'').trim();
     const newName = String(r[iNewName]||'').trim();
@@ -1292,6 +1302,20 @@ function renderReactivationTable(rows){
       <td style="padding:7px 9px;border-bottom:1px solid var(--border)">${actsCell}</td>
     </tr>`;
   }).join('');
+}
+
+async function resetSeenSubdealers(){
+  if (!BOT_URL) { toast('⚠️ Бот не настроен'); return; }
+  if (!confirm('Сбросить память об уведомлениях по субдилерам? При следующей заливке отчёта по привлечению уведомления уйдут заново по всем актуальным записям в файле.')) return;
+  const secret = localStorage.getItem('as_api_secret') || 'as_secret_2026';
+  try {
+    const r = await fetch(`${BOT_URL}/reset-seen-subdealers`, { method: 'POST', headers: { 'X-API-Secret': secret } });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
+    toast(`🔄 Сброшено записей: ${data.cleared}. Залей отчёт по привлечению заново`);
+  } catch(e) {
+    toast('❌ Не удалось сбросить: ' + e.message);
+  }
 }
 
 async function dedupeReactivation(){

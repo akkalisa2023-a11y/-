@@ -582,15 +582,16 @@ def handle_territory_approval_callback(callback_query):
 
 def find_owning_tp(db, partner_name):
     """Ищет, за каким ТП числится партнёр с таким именем — по данным
-    активаций (свежие месяцы приоритетнее). Точное совпадение по имени,
-    без фаззи-подбора — лучше не найти, чем ошибиться адресатом."""
-    partner_name = (partner_name or "").strip()
-    if not partner_name:
+    активаций (свежие месяцы приоритетнее). Сравниваем через norm_name
+    (регистр/пробелы не должны ломать совпадение — то же, что и в
+    реактивации партнёров, где уже ловили такой же баг)."""
+    partner_key = norm_name(partner_name)
+    if not partner_key:
         return None
     months = db.get("months", {})
     for m in sorted(months.keys(), reverse=True):
         for p in months[m].get("partners", []):
-            if (p.get("r") or "").strip() == partner_name:
+            if norm_name(p.get("r") or "") == partner_key:
                 return p.get("t")
     return None
 
@@ -2390,10 +2391,14 @@ def upload_privl():
     return jsonify({"status": "ok", "months": list(privl_months.keys()) or ["legacy"]})
 
 # Новые субдилеры — уведомляем торгового лично (от Валеры), только про тех,
-# о ком ещё не сообщали раньше (дедупликация по имени торгового + субдилера).
-# "torgovy" из выгрузки — это тот, кто создал суба: может быть сам ТП (тогда
-# просто "у тебя новый субдилер"), а может быть партнёр этого ТП (тогда
-# ищем, чей это партнёр, и говорим "у твоего партнёра X появился суб Y").
+# о ком ещё не сообщали раньше (дедупликация по ТП + имени субдилера).
+# ТП теперь приходит НАПРЯМУЮ из отчёта по привлечению (столбец с ТП) —
+# не ищем через активации: партнёр мог быть только что привлечён и ещё
+# ничего не активировать, тогда в данных активаций его попросту нет.
+# "creator" — тот, кто создал суба в системе: может совпадать с самим ТП
+# (тогда "у тебя новый субдилер"), а может быть его партнёром (тогда
+# "у твоего партнёра X появился суб Y") — используется только для текста
+# сообщения, не для поиска адресата.
 @app.route("/new-subdealers", methods=["POST"])
 def new_subdealers():
     if not check_auth():
@@ -2405,41 +2410,35 @@ def new_subdealers():
         db = load_db()
         seen = set(db.setdefault("seen_subdealers", []))
         contacts = db.get("tp_contacts", {})
-        all_tp_names = set(get_all_tp_names(db, include_inactive=True))
+        all_tp_names = get_all_tp_names(db, include_inactive=True)
+        tp_by_norm = {norm_name(n): n for n in all_tp_names}
         for item in incoming:
-            creator = (item.get("torgovy") or "").strip()
+            tp_raw = (item.get("tp") or "").strip()
+            creator = (item.get("creator") or item.get("torgovy") or "").strip()
             name = (item.get("name") or "").strip()
-            if not creator or not name:
+            if not tp_raw or not name:
                 continue
-            key = f"{creator}|||{name}"
+            key = f"{tp_raw}|||{name}"
             if key in seen:
                 continue
-            seen.add(key)
 
-            if creator in all_tp_names:
-                # Создал сам ТП напрямую
-                contact = contacts.get(creator)
-                if not contact:
-                    matched = match_tp_name(creator, contacts.keys())
-                    contact = contacts.get(matched) if matched else None
-                if contact and contact.get("id"):
-                    send_message(
-                        f"🆕 Валера сообщает: у тебя новый субдилер — <b>{name}</b>. Свяжись с ним!",
-                        chat_id=contact["id"]
-                    )
-                    notified += 1
+            tp_canonical = tp_by_norm.get(norm_name(tp_raw), tp_raw)
+            contact = contacts.get(tp_canonical)
+            if not contact:
+                matched = match_tp_name(tp_canonical, contacts.keys())
+                contact = contacts.get(matched) if matched else None
+            if not (contact and contact.get("id")):
+                continue
+
+            if norm_name(creator) == norm_name(tp_raw):
+                text = f"🆕 Валера сообщает: у тебя новый субдилер — <b>{name}</b>. Свяжись с ним!"
             else:
-                # creator — не ТП, значит это партнёр; ищем, чей он
-                owning_tp = find_owning_tp(db, creator)
-                if not owning_tp:
-                    continue
-                contact = contacts.get(owning_tp)
-                if contact and contact.get("id"):
-                    send_message(
-                        f"🆕 Валера сообщает: у твоего партнёра <b>{creator}</b> появился суб — <b>{name}</b>. Свяжись с ним!",
-                        chat_id=contact["id"]
-                    )
-                    notified += 1
+                text = f"🆕 Валера сообщает: у твоего партнёра <b>{creator}</b> появился суб — <b>{name}</b>. Свяжись с ним!"
+            send_message(text, chat_id=contact["id"])
+            notified += 1
+            seen.add(key)  # помечаем только после успешной отправки — иначе,
+            # если контакт не найден, торговый никогда не получит это уведомление
+            # задним числом, даже когда зарегистрируется в боте
 
         db["seen_subdealers"] = list(seen)
         save_db(db)

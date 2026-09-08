@@ -325,7 +325,7 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
   <div class="card" style="margin-bottom:12px">
     <div class="ct"><span class="dot"></span>Рейтинг торговых <span id="tp-month-lbl" style="font-size:10px;color:var(--text3);text-transform:none;font-weight:400;margin-left:4px"></span></div>
     <table>
-      <thead><tr><th>#</th><th>Торговый</th><th>Акт.</th><th>Прогноз</th><th>Пред.</th><th>Партнёров</th><th>3+</th><th>10+</th><th>🚨 Фрод</th><th>% фрод</th><th>Тренд</th></tr></thead>
+      <thead><tr><th>#</th><th>Торговый</th><th>Акт.</th><th>Прогноз</th><th>Прогноз без фрода</th><th>Пред.</th><th>Партнёров</th><th>3+</th><th>10+</th><th>🚨 Фрод</th><th>% фрод</th><th>Тренд</th></tr></thead>
       <tbody id="tp-tbl"></tbody>
     </table>
   </div>
@@ -687,11 +687,11 @@ function processActivations(headers, rows){
     // Считаем прогноз по темпу
     const dates = acts.map(a=>a.date).filter(Boolean).sort();
     const lastDate = dates[dates.length-1]; // последняя дата активации
-    let forecast = null;
+    let daysPassed = null, daysInMonth = null;
     if(lastDate) {
       const [y,mo,d] = lastDate.split('-').map(Number);
-      const daysInMonth = new Date(y, mo, 0).getDate();
-      let daysPassed = d;
+      daysInMonth = new Date(y, mo, 0).getDate();
+      daysPassed = d;
       // Если последняя дата с данными — сегодня, эти сутки ещё не закончились.
       // Без этого к вечеру последнего дня месяца daysPassed совпадает с
       // daysInMonth, и прогноз "запирается" на факте (100% раньше времени).
@@ -700,15 +700,19 @@ function processActivations(headers, rows){
         const fracToday = Math.max((today.getHours()*60 + today.getMinutes()) / (24*60), 0.05);
         daysPassed = (d - 1) + fracToday;
       }
-      const total = acts.length;
-      forecast = Math.round(total / daysPassed * daysInMonth);
     }
-    
+    const forecastFor = count => (daysPassed && daysInMonth) ? Math.round(count / daysPassed * daysInMonth) : count;
+    const forecast = lastDate ? forecastFor(acts.length) : null;
+    const totalNoFraud = acts.length - ft;
+    const forecastNoFraud = lastDate ? forecastFor(totalNoFraud) : null;
+
     stored.months[m]={total:acts.length,ap:Object.keys(actsByR).length,
       p3:vals.filter(v=>v>=3).length,p10:vals.filter(v=>v>=10).length,
       avg:+(acts.length/Object.keys(actsByR).length).toFixed(1),
       fraud:ft,fraud_pct:+(ft/acts.length*100).toFixed(1),
-      forecast, last_date: lastDate, unassigned,
+      total_no_fraud:totalNoFraud,
+      forecast, forecast_no_fraud:forecastNoFraud,
+      last_date: lastDate, unassigned,
       tp:tpList,partners:prList,ops};
     added++;
   });
@@ -879,6 +883,17 @@ function renderKPI(d,dp,pv){
     forecastSub = `факт по ${day}-е | ${pct}% выполнения`;
   }
   
+  // Прогноз без фрода
+  const forecastNoFraud = d.forecast_no_fraud;
+  let forecastNoFraudStr = '';
+  let forecastNoFraudSub = '';
+  if(forecastNoFraud && lastDate) {
+    const totalNoFraud = d.total_no_fraud ?? (d.total - (d.fraud||0));
+    const pctNF = Math.round((totalNoFraud/forecastNoFraud)*100);
+    forecastNoFraudStr = forecastNoFraud.toLocaleString('ru');
+    forecastNoFraudSub = `${pctNF}% выполнения`;
+  }
+
   document.getElementById('kpi-sv').innerHTML=`
     <div class="kc"><div class="kl">Активаций (факт)</div><div class="kv">${d.total.toLocaleString('ru')}</div><div class="ks ${tCls}">${tStr}</div></div>
     ${forecast ? `<div class="kc" style="border-color:rgba(74,210,134,0.35)"><div class="kl">📈 Прогноз на месяц</div><div class="kv" style="color:var(--mint)">${forecastStr}</div><div class="ks">${forecastSub}</div></div>` : ''}
@@ -888,6 +903,8 @@ function renderKPI(d,dp,pv){
     <div class="kc fraud-card"><div class="kl">🚨 Фрод активаций</div><div class="kv ${fraudCls}">${d.fraud||0}</div><div class="ks dn">${fraudPct}% от всех</div></div>
     <div class="kc"><div class="kl">Ср. акт. / партнёр</div><div class="kv">${d.avg}</div><div class="ks">${dp?`vs ${dp.avg} пред.`:'&nbsp;'}</div></div>
     ${d.unassigned ? `<div class="kc" style="border-color:rgba(230,120,40,.4)"><div class="kl">⚠️ Без Торгового/Ритейла</div><div class="kv" style="color:#e67828">${d.unassigned}</div><div class="ks">не попали в разбивку по людям</div></div>` : ''}
+    <div class="kc"><div class="kl">Активаций без фрода (факт)</div><div class="kv">${(d.total_no_fraud ?? (d.total-(d.fraud||0))).toLocaleString('ru')}</div><div class="ks">&nbsp;</div></div>
+    ${forecastNoFraud ? `<div class="kc" style="border-color:rgba(74,210,134,0.2)"><div class="kl">📈 Прогноз без фрода</div><div class="kv" style="color:var(--mint)">${forecastNoFraudStr}</div><div class="ks">${forecastNoFraudSub}</div></div>` : ''}
   `;
 }
 
@@ -1003,10 +1020,15 @@ function renderTPTab(d,dp,pv){
     }
   }
   const forecastFor = t => (daysPassed && daysInMonth) ? Math.round(t.acts / daysPassed * daysInMonth) : t.acts;
+  const forecastForNoFraud = t => {
+    const actsNoFraud = t.acts - (t.fraud||0);
+    return (daysPassed && daysInMonth) ? Math.round(actsNoFraud / daysPassed * daysInMonth) : actsNoFraud;
+  };
 
   document.getElementById('tp-tbl').innerHTML=d.tp.map((t,i)=>{
     const pa=prevMap[t.name];
     const fc=forecastFor(t);
+    const fcNoFraud=forecastForNoFraud(t);
     const diff=pa!==undefined?fc-pa:null;
     const tr=diff===null?'—':diff>0?`<span class="up">↑${diff}</span>`:diff<0?`<span class="dn">↓${Math.abs(diff)}</span>`:'=';
     const rn=i===0?'g1':i===1?'s1':i===2?'b1':'';
@@ -1016,6 +1038,7 @@ function renderTPTab(d,dp,pv){
       <td style="color:var(--text);font-weight:500">${t.name}</td>
       <td><b style="color:var(--mint)">${t.acts}</b></td>
       <td style="color:var(--text2)" title="Прогноз на конец месяца по текущему темпу">📈 ${fc}</td>
+      <td style="color:var(--text2)" title="Прогноз без учёта фрод-активаций">📈 ${fcNoFraud}</td>
       <td style="color:var(--text3)">${pa!==undefined?pa:'—'}</td>
       <td>${t.partners}</td>
       <td><span class="bdg bg2">${t.p3}</span></td>

@@ -1609,6 +1609,23 @@ VALERA_INTRO = [
     "Валера здесь. И Валера не в восторге. 😠",
 ]
 
+# Похвала за рост прогноза (без фрода) — разные варианты, чтобы не приедалось
+GROWTH_PRAISE = [
+    "💪 Команда жжёт! Фёдор доволен. Держим темп!",
+    "🎉 Вот это разгон! Фёдор аж прослезился от радости.",
+    "🚀 Так держать! Фёдор уже хвастается цифрами перед зеркалом.",
+    "🔥 Огонь, а не темп! Фёдор доволен, Валера может отдыхать.",
+    "👏 Отличная динамика! Фёдор ставит команде лайк.",
+]
+
+# Похвала за стабильный, нормальный темп (без явного роста/падения)
+STEADY_PRAISE = [
+    "Фёдор следит за динамикой 👀",
+    "Фёдор кивает — стабильно, но без сюрпризов 🙂",
+    "Ровный темп, Фёдор одобряет 👍",
+    "Идём по плану, Фёдор спокоен ☕",
+]
+
 def mention_for(name, contacts):
     """Возвращает кликабельное упоминание агента в Telegram, если известен
     его chat_id (после того как он один раз написал боту/прошёл регистрацию).
@@ -1668,36 +1685,42 @@ PRAISE_PUBLIC = [
 ]
 
 def build_forecast_callout(d, dp, show_transform=True):
-    """Вызов/похвала на основе прогноза. Возвращает (текст, была_ли_трансформация)."""
-    forecast = d.get("forecast")
+    """Вызов/похвала на основе прогноза. Решение хвалить или ругать
+    принимается по прогнозу БЕЗ ФРОДА (forecast_no_fraud) — иначе торговый
+    мог бы получить похвалу просто нафродив активаций. За сам фрод
+    отдельно ругает build_fraud_callout. Возвращает (текст, была_ли_трансформация)."""
+    forecast_all = d.get("forecast")
+    forecast = d.get("forecast_no_fraud", forecast_all)  # если старые данные без поля — fallback на обычный
     last_date = d.get("last_date", "")
-    total = d.get("total", 0)
-    
+    total_all = d.get("total", 0)
+    total = d.get("total_no_fraud", total_all)
+
     if not forecast or not last_date:
         return None, False
-    
+
     day = int(last_date.split("-")[2]) if last_date else 0
     pct = round(total/forecast*100) if forecast else 0
-    
-    prev_total = dp.get("total", 0) if dp else 0
-    
+
+    prev_total_all = dp.get("total", 0) if dp else 0
+    prev_total = dp.get("total_no_fraud", prev_total_all) if dp else 0
+
     lines = ["", "━━━━━━━━━━━━━━━━━━━━"]
     is_bad = False
-    
+
     if prev_total and forecast >= prev_total * 1.1:
-        # Прогноз превышает прошлый месяц на 10%+
+        # Прогноз (без фрода) превышает прошлый месяц на 10%+
         growth = round((forecast - prev_total) / prev_total * 100)
         lines += [
             f"🚀 <b>ПРОГНОЗ МЕСЯЦА</b>",
             "",
-            f"📈 При текущем темпе выйдем на <b>{forecast:,} активаций</b>".replace(",", " "),
+            f"При текущем темпе выйдем на <b>{forecast:,} активаций</b> (без учёта фрода)".replace(",", " "),
             f"Это <b>+{growth}%</b> к прошлому месяцу ({prev_total:,})!".replace(",", " "),
             f"Данные по {day}-е числу — {pct}% выполнения.",
             "",
-            "💪 Команда жжёт! Фёдор доволен. Держим темп!",
+            random.choice(GROWTH_PRAISE),
         ]
     elif prev_total and forecast < prev_total * 0.9:
-        # Прогноз ниже прошлого месяца на 10%+
+        # Прогноз (без фрода) ниже прошлого месяца на 10%+
         is_bad = True
         drop = round((prev_total - forecast) / prev_total * 100)
         if show_transform:
@@ -1705,21 +1728,21 @@ def build_forecast_callout(d, dp, show_transform=True):
         lines += [
             f"📉 <b>ПРОГНОЗ НИЖЕ ПРОШЛОГО МЕСЯЦА</b>",
             "",
-            f"При текущем темпе выйдем на <b>{forecast:,} акт.</b>".replace(",", " "),
+            f"При текущем темпе выйдем на <b>{forecast:,} акт.</b> (без учёта фрода)".replace(",", " "),
             f"Прошлый месяц был <b>{prev_total:,}</b> — падение на <b>{drop}%</b>!".replace(",", " "),
             f"Данные по {day}-е числу — осталось {100-pct}% месяца.",
             "",
             "Валера ждёт объяснений и план действий! 📋",
         ]
     elif pct < 40 and day > 15:
-        # После середины месяца выполнено меньше 40%
+        # После середины месяца выполнено меньше 40% (от прогноза без фрода)
         is_bad = True
         if show_transform:
             lines += [f"{random.choice(TRANSFORM_PHRASES)}", "", f"<i>{random.choice(VALERA_INTRO)}</i>", ""]
         lines += [
             f"⚠️ <b>ТЕМП СЛАБЫЙ</b>",
             "",
-            f"По {day}-е числу факт <b>{total:,} акт.</b> — только {pct}% от прогноза.".replace(",", " "),
+            f"По {day}-е числу факт (без фрода) <b>{total:,} акт.</b> — только {pct}% от прогноза.".replace(",", " "),
             f"Прогноз на месяц: <b>{forecast:,} акт.</b>".replace(",", " "),
             "",
             "Валера смотрит и хмурится. Нужно прибавить! 💢",
@@ -1729,11 +1752,11 @@ def build_forecast_callout(d, dp, show_transform=True):
         lines += [
             f"📊 <b>ПРОГНОЗ МЕСЯЦА</b>",
             "",
-            f"При текущем темпе: <b>{forecast:,} акт.</b>".replace(",", " "),
+            f"При текущем темпе: <b>{forecast:,} акт.</b> (без учёта фрода)".replace(",", " "),
             f"Данные по {day}-е числу — {pct}% выполнения.",
-            "Фёдор следит за динамикой 👀",
+            random.choice(STEADY_PRAISE),
         ]
-    
+
     return "\n".join(lines), is_bad
 
 
@@ -1774,7 +1797,9 @@ def get_drop_offenders(tp_list_cur, tp_list_prev, last_date=None, days_in_month=
     if not tp_list_prev:
         return []
     days_passed, days_in_month_calc = days_passed_for_forecast(last_date)
-    prev_map = {t['name']: t['acts'] for t in tp_list_prev}
+    # Сравниваем без фрода с обеих сторон — иначе фродовый прошлый месяц
+    # или фродовый текущий темп искажали бы картину падения/роста.
+    prev_map = {t['name']: t['acts'] - t.get('fraud', 0) for t in tp_list_prev}
     offenders = []
     for t in tp_list_cur:
         if any(ex in t["name"] for ex in EXCLUDED_FROM_REPORT):
@@ -1782,13 +1807,14 @@ def get_drop_offenders(tp_list_cur, tp_list_prev, last_date=None, days_in_month=
         prev = prev_map.get(t['name'], 0)
         if prev == 0:
             continue
+        acts_no_fraud = t['acts'] - t.get('fraud', 0)
         # Сравниваем не "факт на сегодня" с "фактом за весь прошлый месяц" (это всегда
         # выглядит как обвал в начале месяца), а прогнозируемый темп ТП на весь месяц —
         # тем же способом, каким считается общий прогноз по компании.
         if days_passed and days_in_month_calc and days_passed > 0:
-            forecast_acts = round(t['acts'] / days_passed * days_in_month_calc)
+            forecast_acts = round(acts_no_fraud / days_passed * days_in_month_calc)
         else:
-            forecast_acts = t['acts']
+            forecast_acts = acts_no_fraud
         diff = forecast_acts - prev
         drop_pct = round(abs(diff) / max(prev, 1) * 100)
         if diff < 0 and drop_pct >= threshold_pct:
@@ -1878,9 +1904,10 @@ def build_public_praise(tp_list, has_bad=False, last_date=None, days_in_month=No
 
     days_passed, days_in_month_calc = days_passed_for_forecast(last_date)
     def forecast_for(t):
+        acts_no_fraud = t['acts'] - t.get('fraud', 0)
         if days_passed and days_in_month_calc and days_passed > 0:
-            return round(t['acts'] / days_passed * days_in_month_calc)
-        return t['acts']
+            return round(acts_no_fraud / days_passed * days_in_month_calc)
+        return acts_no_fraud
 
     top = max(candidates, key=forecast_for)
     top_forecast = forecast_for(top)

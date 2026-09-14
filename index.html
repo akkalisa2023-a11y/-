@@ -8,16 +8,17 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://api-maps.yandex.ru/2.1/?apikey=a5aade45-b881-43ec-8f38-6d59af7cb58e&lang=ru_RU" type="text/javascript"></script>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 :root{
-  --bg:#0d110d;--bg2:#121712;--bg3:#171f17;--card:#1c251c;--card2:#202d20;
-  --border:rgba(74,210,134,0.12);--border2:rgba(74,210,134,0.28);
-  --mint:#4ad286;--mint2:#38b870;--mint-dim:rgba(74,210,134,0.08);--mint-glow:rgba(74,210,134,0.18);
-  --text:#edf5f0;--text2:#7fa88f;--text3:#4a6454;
-  --red:#e84040;--red-dim:rgba(232,64,64,0.12);
-  --amber:#f5a623;--amber-dim:rgba(245,166,35,0.12);
-  --radius:12px;--radius-sm:8px;
-  /* operator colors */
+  /* Палитра снята с сайта asvyazi.ru — нейтральный графит + фирменный мятно-бирюзовый */
+  --bg:#131313;--bg2:#191919;--bg3:#1e1e1e;--card:#1c1c1c;--card2:#232323;
+  --border:rgba(255,255,255,0.07);--border2:rgba(255,255,255,0.14);
+  --mint:#34c78e;--mint2:#279166;--mint-dim:rgba(52,199,142,0.10);--mint-glow:rgba(52,199,142,0.24);
+  --text:#f2f2f0;--text2:#9c9c97;--text3:#68675f;
+  --red:#ef4444;--red-dim:rgba(239,68,68,0.12);
+  --amber:#f2a93c;--amber-dim:rgba(242,169,60,0.12);
+  --radius:14px;--radius-sm:10px;--radius-pill:999px;
+  /* operator colors — фирменные цвета операторов, не трогаем */
   --beeline:#FFD700;--beeline2:#1a1a1a;
   --mega:#00B956;--mega2:#830051;
   --mts:#E30611;
@@ -26,28 +27,56 @@
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+
+/* MASCOT — фоновая иллюстрация в углу, чисто декоративная */
+.mascot-bg{position:fixed;right:-10px;bottom:-10px;width:220px;height:auto;opacity:.09;pointer-events:none;z-index:-1;filter:grayscale(.2)}
+.mascot-inline{width:64px;height:auto;flex-shrink:0;opacity:.9}
+.mascot-inline.valera{filter:hue-rotate(192deg) saturate(1.6) brightness(.8) drop-shadow(0 0 8px rgba(239,68,68,.5))}
+.empty-state{display:flex;align-items:center;gap:14px;padding:14px 16px;color:var(--text3)}
+
+/* HERO BAND — атмосфера в духе сайта (градиент/свечение/водяной знак), в обычном потоке
+   документа, а не поверх/под контентом — поэтому всегда видна, а не спрятана за карточками. */
+.hero-band{position:relative;overflow:hidden;height:104px;
+  background:linear-gradient(135deg, var(--bg2) 0%, var(--bg) 60%);
+  border-bottom:1px solid var(--border)}
+.hero-band .grid{position:absolute;inset:0;
+  background-image:
+    repeating-linear-gradient(45deg, rgba(255,255,255,.03) 0 1px, transparent 1px 36px),
+    repeating-linear-gradient(-45deg, rgba(255,255,255,.03) 0 1px, transparent 1px 36px);
+  mask-image:linear-gradient(90deg, transparent 0%, #000 35%, #000 100%)}
+.hero-band .glow{position:absolute;width:480px;height:480px;border-radius:50%;
+  right:-140px;top:-260px;
+  background:radial-gradient(circle, var(--mint-glow) 0%, transparent 70%);opacity:.65}
+.hero-band .wordmark{position:absolute;right:24px;top:50%;transform:translateY(-50%);
+  font-size:84px;font-weight:800;line-height:1;letter-spacing:-3px;
+  color:rgba(255,255,255,.045);white-space:nowrap;user-select:none}
+.hero-band .hero-mascot{position:absolute;right:130px;bottom:-14px;height:128px;opacity:.92;filter:drop-shadow(0 8px 20px rgba(0,0,0,.4))}
+.hero-band .hero-text{position:relative;z-index:1;height:100%;display:flex;flex-direction:column;justify-content:center;padding:0 24px}
+.hero-band .hero-title{font-size:19px;font-weight:700;color:var(--text)}
+.hero-band .hero-sub{font-size:12.5px;color:var(--text2);margin-top:4px}
 ::-webkit-scrollbar{width:4px;height:4px}
 ::-webkit-scrollbar-track{background:var(--bg2)}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px}
 
 /* HEADER */
-.header{background:var(--bg2);border-bottom:1px solid var(--border);padding:12px 24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:100;backdrop-filter:blur(12px)}
+.header{background:var(--bg2);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:100;backdrop-filter:blur(12px)}
 .logo-wrap{display:flex;align-items:center;gap:10px}
-.logo-img{width:32px;height:32px}
+.logo-img{width:30px;height:30px}
 .logo-txt{font-size:17px;font-weight:700;color:var(--text);letter-spacing:-0.3px}
 .logo-sub{font-size:11px;color:var(--text3);margin-left:2px}
 .month-btns{display:flex;gap:5px;flex-wrap:wrap;margin-left:8px}
-.mbtn{padding:5px 14px;border:1px solid var(--border);border-radius:20px;background:transparent;cursor:pointer;font-size:12px;color:var(--text2);font-family:inherit;transition:all .2s}
-.mbtn:hover{border-color:var(--mint);color:var(--mint)}
-.mbtn.on{background:var(--mint);color:#000;border-color:var(--mint);font-weight:600;box-shadow:0 0 16px var(--mint-glow)}
+.mbtn{padding:6px 15px;border:1px solid var(--border);border-radius:var(--radius-pill);background:transparent;cursor:pointer;font-size:12px;color:var(--text2);font-family:inherit;transition:border-color .2s,color .2s,background .2s}
+.mbtn:hover{border-color:var(--border2);color:var(--text)}
+.mbtn.on{background:var(--mint);color:#0e0e0e;border-color:var(--mint);font-weight:600}
 .upload-area{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap}
-.upload-btn{padding:6px 14px;border:1px solid var(--border2);border-radius:20px;cursor:pointer;font-size:12px;color:var(--mint);background:var(--mint-dim);font-family:inherit;transition:all .2s;white-space:nowrap}
-.upload-btn:hover{background:var(--mint);color:#000}
+.upload-btn{padding:7px 15px;border:1px solid var(--border2);border-radius:var(--radius-pill);cursor:pointer;font-size:12px;color:var(--mint);background:var(--mint-dim);font-family:inherit;transition:background .2s,color .2s;white-space:nowrap}
+.upload-btn:hover{background:var(--mint);color:#0e0e0e}
 input[type=file]{display:none}
 
 /* TABS */
 .tabs{background:var(--bg2);border-bottom:1px solid var(--border);padding:0 24px;display:flex;gap:0}
-.tab{padding:12px 20px;cursor:pointer;border-bottom:2px solid transparent;font-size:13px;color:var(--text3);transition:all .2s;font-weight:500}
+.tab{padding:13px 20px;cursor:pointer;border-bottom:2px solid transparent;font-size:13px;color:var(--text3);transition:color .2s,border-color .2s;font-weight:500;display:flex;align-items:center;gap:7px}
+.tab svg{flex-shrink:0;opacity:.85}
 .tab:hover{color:var(--text2)}
 .tab.on{color:var(--mint);border-bottom-color:var(--mint)}
 
@@ -56,26 +85,26 @@ input[type=file]{display:none}
 
 /* KPI */
 .kgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin-bottom:14px}
-.kc{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;position:relative;overflow:hidden;transition:border-color .3s,transform .2s;animation:fadeUp .4s ease both}
-.kc:hover{border-color:var(--border2);transform:translateY(-2px)}
-.kc::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--mint),transparent);opacity:.6}
-.kc.fraud-card::before{background:linear-gradient(90deg,var(--red),transparent)}
-.kl{font-size:10px;color:var(--text3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.5px}
-.kv{font-size:24px;font-weight:700;color:var(--text);line-height:1}
+.kc{background:var(--card);border:1px solid var(--border);border-left:2px solid transparent;border-radius:var(--radius);padding:14px 16px;position:relative;transition:border-color .2s}
+.kc:hover{border-color:var(--border2)}
+.kc.hero{border-left-color:var(--mint)}
+.kc.fraud-card{border-left-color:var(--red)}
+.kl{font-size:11.5px;color:var(--text2);margin-bottom:6px;font-weight:500}
+.kv{font-size:27px;font-weight:800;color:var(--text);line-height:1;letter-spacing:-0.4px;font-variant-numeric:tabular-nums}
 .kv.red{color:var(--red)}
-.ks{font-size:11px;margin-top:4px;color:var(--text3)}
+.ks{font-size:11px;margin-top:5px;color:var(--text3)}
 .up{color:var(--mint)}.dn{color:var(--red)}
 
 /* GRID */
 .g2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
 .g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;animation:fadeUp .4s ease both;transition:border-color .3s}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;transition:border-color .2s}
 .card:hover{border-color:var(--border2)}
 .card.full{grid-column:1/-1}
-.ct{font-size:11px;font-weight:600;color:var(--text2);margin-bottom:12px;text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:6px}
-.dot{width:6px;height:6px;border-radius:50%;background:var(--mint);box-shadow:0 0 6px var(--mint);flex-shrink:0}
-.dot-red{background:var(--red);box-shadow:0 0 6px var(--red)}
-.dot-amber{background:var(--amber);box-shadow:0 0 6px var(--amber)}
+.ct{font-size:12.5px;font-weight:600;color:var(--text);margin-bottom:12px;display:flex;align-items:center;gap:7px}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--mint);flex-shrink:0}
+.dot-red{background:var(--red)}
+.dot-amber{background:var(--amber)}
 
 /* BARS */
 .brow{display:flex;align-items:center;gap:8px;margin-bottom:6px;animation:fadeRight .35s ease both}
@@ -88,9 +117,9 @@ input[type=file]{display:none}
 .ba{background:linear-gradient(90deg,#c07000,var(--amber));color:#000}
 .bfr{background:linear-gradient(90deg,#a00,var(--red));color:#fff}
 .rn{display:inline-flex;width:20px;height:20px;border-radius:50%;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;color:var(--text3);background:var(--bg3);border:1px solid var(--border)}
-.g1{background:linear-gradient(135deg,#b8860b,#ffd700);color:#000;border:none}
-.s1{background:linear-gradient(135deg,#555,#aaa);color:#000;border:none}
-.b1{background:linear-gradient(135deg,#7a3010,#cd7f32);color:#fff;border:none}
+.g1{background:linear-gradient(135deg,#8a6a1f,#e8c766);color:#241a05;border:none}
+.s1{background:linear-gradient(135deg,#6b6b70,#c9c9cf);color:#1a1a1a;border:none}
+.b1{background:linear-gradient(135deg,#6e3a1c,#c68a52);color:#fff;border:none}
 
 /* TABLE */
 table{width:100%;border-collapse:collapse;font-size:12px}
@@ -102,7 +131,7 @@ tr:last-child td{border-bottom:none}
 
 /* BADGES */
 .bdg{display:inline-block;font-size:10px;padding:2px 7px;border-radius:20px;font-weight:600}
-.bg2{background:rgba(74,210,134,.12);color:var(--mint)}
+.bg2{background:rgba(52,199,142,.12);color:var(--mint)}
 .ba2{background:var(--amber-dim);color:var(--amber)}
 .br2{background:var(--red-dim);color:var(--red)}
 .bb2{background:rgba(41,128,185,.12);color:#2980b9}
@@ -140,7 +169,7 @@ tr:last-child td{border-bottom:none}
 .eff-bar-wrap{width:100%;height:4px;background:var(--bg3);border-radius:2px;margin-top:6px;overflow:hidden}
 .eff-bar-fill{height:100%;border-radius:2px;transition:width .9s cubic-bezier(.4,0,.2,1)}
 
-.score-s{background:linear-gradient(135deg,#1a3a2a,#1c3a25);border-color:rgba(74,210,134,0.35)}
+.score-s{background:linear-gradient(135deg,#1a2e26,#1c2e22);border-color:rgba(52,199,142,0.35)}
 .score-a{background:linear-gradient(135deg,#1a2a3a,#1a2f3a);border-color:rgba(74,155,210,0.3)}
 .score-b{background:linear-gradient(135deg,#2a2a1a,#2a2f15);border-color:rgba(200,200,74,0.25)}
 .score-c{background:linear-gradient(135deg,#2a1a1a,#2a1515);border-color:rgba(210,74,74,0.25)}
@@ -155,7 +184,7 @@ tr:last-child td{border-bottom:none}
 .toast.show{transform:translateY(0);opacity:1}
 
 /* ANIMATIONS */
-@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 @keyframes fadeRight{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:translateX(0)}}
 .kc:nth-child(1){animation-delay:.04s}.kc:nth-child(2){animation-delay:.08s}.kc:nth-child(3){animation-delay:.12s}.kc:nth-child(4){animation-delay:.16s}.kc:nth-child(5){animation-delay:.2s}.kc:nth-child(6){animation-delay:.24s}
 .brow:nth-child(1){animation-delay:.04s}.brow:nth-child(2){animation-delay:.08s}.brow:nth-child(3){animation-delay:.12s}.brow:nth-child(4){animation-delay:.16s}.brow:nth-child(5){animation-delay:.2s}.brow:nth-child(6){animation-delay:.24s}.brow:nth-child(7){animation-delay:.28s}.brow:nth-child(8){animation-delay:.32s}
@@ -203,11 +232,17 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
 </head>
 <body>
 
+<img class="mascot-bg" src="assets/mascot/mascot-phone.png" alt="">
+
 <div class="header">
   <div class="logo-wrap">
-    <svg class="logo-img" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <polygon points="20,3 37,34 3,34" stroke="#4ad286" stroke-width="3" fill="none" stroke-linejoin="round"/>
-      <rect x="12" y="30" width="16" height="3" rx="1.5" fill="#4ad286"/>
+    <svg class="logo-img" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+      <mask id="logoTriangleMask">
+        <rect x="0" y="0" width="40" height="40" fill="black"/>
+        <polygon points="20,4 36,34 4,34" fill="white"/>
+        <polygon points="20,13 29,31 11,31" fill="black"/>
+      </mask>
+      <rect x="0" y="0" width="40" height="40" fill="#34c78e" mask="url(#logoTriangleMask)"/>
     </svg>
     <span class="logo-txt">АС</span>
     <span class="logo-sub">Партнёрский дашборд</span>
@@ -220,7 +255,7 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
       <label class="upload-btn" for="file-privl">＋ Привлечение</label>
       <input type="file" id="file-privl" accept=".xlsx" onchange="loadFile(this,'privl')">
       <button class="upload-btn" onclick="showBotSettings()" style="background:rgba(0,136,204,0.15);border-color:rgba(0,136,204,0.4);color:#29abe2" title="Настройки Telegram бота">✈️ TG</button>
-      <button class="upload-btn" onclick="requestCheckinsNow()" style="background:rgba(74,210,134,0.1)" title="Запросить геолокацию у всех агентов прямо сейчас">📍 Запросить локации</button>
+      <button class="upload-btn" onclick="requestCheckinsNow()" style="background:rgba(52,199,142,0.1)" title="Запросить геолокацию у всех агентов прямо сейчас">📍 Запросить локации</button>
       <button class="upload-btn" onclick="openTerritoriesModal()" style="background:rgba(154,89,224,0.12);border-color:rgba(154,89,224,0.4);color:#b98cf0" title="Закрепить города за торговыми">🗺️ Территории</button>
       <button class="upload-btn" onclick="openContactsModal()" style="background:rgba(41,171,226,0.12);border-color:rgba(41,171,226,0.4);color:#29abe2" title="Кто реально зарегистрирован в боте">👥 Контакты</button>
       <button class="upload-btn" onclick="openVacationsModal()" style="background:rgba(255,180,60,0.12);border-color:rgba(255,180,60,0.4);color:#ffb43c" title="График отпусков по торговым">🏖️ Отпуска</button>
@@ -286,13 +321,24 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
 </div>
 
 <div class="tabs">
-  <div class="tab on" onclick="sw('sv',this)">Сводка</div>
-  <div class="tab" onclick="sw('tp',this)">Торговые</div>
-  <div class="tab" onclick="sw('pr',this)">Партнёры</div>
-  <div class="tab" onclick="sw('at',this)">Привлечение</div>
-  <div class="tab" onclick="sw('ef',this)">Эффективность</div>
-  <div class="tab" onclick="sw('mp',this)">Карта</div>
-  <div class="tab" onclick="sw('rc',this)">Реактивация</div>
+  <div class="tab on" onclick="sw('sv',this)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>Сводка</div>
+  <div class="tab" onclick="sw('tp',this)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>Торговые</div>
+  <div class="tab" onclick="sw('pr',this)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M17 3H9L4 8v12a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V7l-3-4z"/><path d="M8.5 13h8M8.5 17h5" stroke-linecap="round" stroke-width="1.4"/></svg>Партнёры</div>
+  <div class="tab" onclick="sw('at',this)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><path d="M20 8v6M23 11h-6"/></svg>Привлечение</div>
+  <div class="tab" onclick="sw('ef',this)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>Эффективность</div>
+  <div class="tab" onclick="sw('mp',this)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>Карта</div>
+  <div class="tab" onclick="sw('rc',this)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>Реактивация</div>
+</div>
+
+<div class="hero-band">
+  <div class="grid"></div>
+  <div class="glow"></div>
+  <div class="wordmark">СВЯЗЬ</div>
+  <img class="hero-mascot" src="assets/mascot/mascot-phone.png" alt="">
+  <div class="hero-text">
+    <div class="hero-title">Агентство Связи</div>
+    <div class="hero-sub">Партнёрская сеть · красивые номера и выгодные тарифы</div>
+  </div>
 </div>
 
 <div class="content">
@@ -896,15 +942,18 @@ function renderKPI(d,dp,pv){
 
   document.getElementById('kpi-sv').innerHTML=`
     <div class="kc"><div class="kl">Активаций (факт)</div><div class="kv">${d.total.toLocaleString('ru')}</div><div class="ks ${tCls}">${tStr}</div></div>
-    ${forecast ? `<div class="kc" style="border-color:rgba(74,210,134,0.35)"><div class="kl">📈 Прогноз на месяц</div><div class="kv" style="color:var(--mint)">${forecastStr}</div><div class="ks">${forecastSub}</div></div>` : ''}
+    ${forecast ? `<div class="kc hero"><div class="kl">📈 Прогноз на месяц</div><div class="kv" style="color:var(--mint)">${forecastStr}</div><div class="ks">${forecastSub}</div></div>` : ''}
     <div class="kc"><div class="kl">Активных партнёров</div><div class="kv">${d.ap}</div><div class="ks">${dp?`vs ${dp.ap} пред.`:'&nbsp;'}</div></div>
     <div class="kc"><div class="kl">Партнёров 3+</div><div class="kv">${d.p3}</div><div class="ks">${Math.round(d.p3/d.ap*100)}% от активных</div></div>
     <div class="kc"><div class="kl">Партнёров 10+</div><div class="kv">${d.p10}</div><div class="ks">${Math.round(d.p10/d.ap*100)}% от активных</div></div>
-    <div class="kc fraud-card"><div class="kl">🚨 Фрод активаций</div><div class="kv ${fraudCls}">${d.fraud||0}</div><div class="ks dn">${fraudPct}% от всех</div></div>
+    <div class="kc fraud-card" style="display:flex;align-items:center;justify-content:space-between;gap:10px;${fraudPct>10?'grid-column:span 2':''}">
+      <div><div class="kl">🚨 Фрод активаций</div><div class="kv ${fraudCls}">${d.fraud||0}</div><div class="ks dn">${fraudPct}% от всех</div></div>
+      ${fraudPct>10 ? `<img class="mascot-inline valera" style="width:38px" src="assets/mascot/mascot-premium.png" alt="" title="Валера недоволен">` : ''}
+    </div>
     <div class="kc"><div class="kl">Ср. акт. / партнёр</div><div class="kv">${d.avg}</div><div class="ks">${dp?`vs ${dp.avg} пред.`:'&nbsp;'}</div></div>
     ${d.unassigned ? `<div class="kc" style="border-color:rgba(230,120,40,.4)"><div class="kl">⚠️ Без Торгового/Ритейла</div><div class="kv" style="color:#e67828">${d.unassigned}</div><div class="ks">не попали в разбивку по людям</div></div>` : ''}
     <div class="kc"><div class="kl">Активаций без фрода (факт)</div><div class="kv">${(d.total_no_fraud ?? (d.total-(d.fraud||0))).toLocaleString('ru')}</div><div class="ks">&nbsp;</div></div>
-    ${forecastNoFraud ? `<div class="kc" style="border-color:rgba(74,210,134,0.2)"><div class="kl">📈 Прогноз без фрода</div><div class="kv" style="color:var(--mint)">${forecastNoFraudStr}</div><div class="ks">${forecastNoFraudSub}</div></div>` : ''}
+    ${forecastNoFraud ? `<div class="kc hero"><div class="kl">📈 Прогноз без фрода</div><div class="kv" style="color:var(--mint)">${forecastNoFraudStr}</div><div class="ks">${forecastNoFraudSub}</div></div>` : ''}
   `;
 }
 
@@ -952,19 +1001,19 @@ function renderOps(ops){
   const colors=labels.map(l=>OP_CHART_COLORS[['Билайн','Мегафон','МТС','Yota','Tele2'].indexOf(l)]||'#888');
   opsC=new Chart(document.getElementById('opsChart'),{
     type:'doughnut',
-    data:{labels, datasets:[{data:vals, backgroundColor:colors, borderWidth:2, borderColor:'#1c251c'}]},
+    data:{labels, datasets:[{data:vals, backgroundColor:colors, borderWidth:2, borderColor:'#1c1c1c'}]},
     options:{responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{position:'right',labels:{color:'#7fa88f',font:{size:11},boxWidth:12,padding:7,
+      plugins:{legend:{position:'right',labels:{color:'#9c9c97',font:{size:11},boxWidth:12,padding:7,
         generateLabels(chart){
           return chart.data.labels.map((l,i)=>({
             text:` ${l}: ${chart.data.datasets[0].data[i]}`,
             fillStyle:colors[i], strokeStyle:colors[i], lineWidth:0,
-            fontColor:'#7fa88f', hidden:false, index:i
+            fontColor:'#9c9c97', hidden:false, index:i
           }));
         }
       }}},
-      tooltip:{backgroundColor:'#1c251c',borderColor:'rgba(74,210,134,.3)',borderWidth:1,
-               titleColor:'#4ad286',bodyColor:'#7fa88f'}
+      tooltip:{backgroundColor:'#1c1c1c',borderColor:'rgba(52,199,142,.3)',borderWidth:1,
+               titleColor:'#34c78e',bodyColor:'#9c9c97'}
     }
   });
 }
@@ -974,7 +1023,7 @@ function renderMainChart(){
   const months=sortedMonths();
   const vals=months.map(m=>DB.months[m].total);
   const fraudVals=months.map(m=>DB.months[m].fraud||0);
-  const barColors=months.map(m=>m===cur?'#4ad286':'rgba(74,210,134,0.22)');
+  const barColors=months.map(m=>m===cur?'#34c78e':'rgba(52,199,142,0.22)');
   // Прогноз для текущего месяца
   const forecastVals = months.map(m => DB.months[m].forecast || null);
   
@@ -984,14 +1033,14 @@ function renderMainChart(){
       {label:'Активации',data:vals,backgroundColor:barColors,borderRadius:5,order:2},
       {label:'Фрод',data:fraudVals,type:'line',borderColor:'#e84040',backgroundColor:'rgba(232,64,64,0.1)',
        tension:0.4,pointBackgroundColor:'#e84040',pointRadius:3,borderWidth:2,fill:true,order:1},
-      {label:'Прогноз',data:forecastVals,type:'line',borderColor:'#4ad286',
-       borderDash:[6,4],borderWidth:2,pointBackgroundColor:'#4ad286',pointRadius:4,
+      {label:'Прогноз',data:forecastVals,type:'line',borderColor:'#34c78e',
+       borderDash:[6,4],borderWidth:2,pointBackgroundColor:'#34c78e',pointRadius:4,
        backgroundColor:'transparent',tension:0,order:0,
        pointStyle:'star'}
     ]},
     options:{responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{labels:{color:'#7fa88f',font:{size:11},boxWidth:10}},
-        tooltip:{backgroundColor:'#1c251c',borderColor:'rgba(74,210,134,.3)',borderWidth:1,titleColor:'#4ad286',bodyColor:'#7fa88f'}},
+      plugins:{legend:{labels:{color:'#9c9c97',font:{size:11},boxWidth:10}},
+        tooltip:{backgroundColor:'#1c1c1c',borderColor:'rgba(52,199,142,.3)',borderWidth:1,titleColor:'#34c78e',bodyColor:'#9c9c97'}},
       scales:{y:{ticks:{color:'#4a6454',font:{size:10}},grid:{color:'rgba(255,255,255,0.04)'}},
               x:{ticks:{color:'#4a6454',font:{size:10}},grid:{display:false}}},
       animation:{duration:600}
@@ -1055,14 +1104,14 @@ function renderTPTab(d,dp,pv){
     bars('tp-bar-fraud', hasFraud.slice(0,8).map(t=>({nm:t.name,val:t.fraud})), hasFraud[0].fraud,'bfr',0.1);
   } else {
     const elF=document.getElementById('tp-bar-fraud');
-    if(elF) elF.innerHTML='<div style="padding:16px;color:var(--text3);font-size:13px">Фрода за этот месяц нет 🎉</div>';
+    if(elF) elF.innerHTML='<div class="empty-state"><img class="mascot-inline" src="assets/mascot/mascot-success.png" alt=""><span>Фрода за этот месяц нет 🎉</span></div>';
   }
   const hasFraudPct=d.tp.filter(t=>t.acts>=5&&t.fraud_pct>0).sort((a,b)=>b.fraud_pct-a.fraud_pct);
   if(hasFraudPct.length) {
     bars('tp-bar-fraud-pct', hasFraudPct.slice(0,8).map(t=>({nm:t.name,val:t.fraud_pct})), hasFraudPct[0].fraud_pct,'ba',0.1);
   } else {
     const elP=document.getElementById('tp-bar-fraud-pct');
-    if(elP) elP.innerHTML='<div style="padding:16px;color:var(--text3);font-size:13px">Фрода за этот месяц нет 🎉</div>';
+    if(elP) elP.innerHTML='<div class="empty-state"><img class="mascot-inline" src="assets/mascot/mascot-success.png" alt=""><span>Фрода за этот месяц нет 🎉</span></div>';
   }
 }
 
@@ -1163,14 +1212,14 @@ function renderPrivl(){
     type:'bar',
     data:{labels:privl.map(d=>d.n.split(' ').slice(0,2).join(' ')),
       datasets:[
-        {label:'Уникальных',data:privl.map(d=>d.u),backgroundColor:'#4ad286',borderRadius:3},
+        {label:'Уникальных',data:privl.map(d=>d.u),backgroundColor:'#34c78e',borderRadius:3},
         {label:'Субдилеров',data:privl.map(d=>d.s),backgroundColor:'rgba(245,166,35,0.7)',borderRadius:3}
       ]},
     options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',
-      plugins:{legend:{labels:{color:'#7fa88f',font:{size:11},boxWidth:10}},
-        tooltip:{backgroundColor:'#1c251c',borderColor:'rgba(74,210,134,.3)',borderWidth:1,titleColor:'#4ad286',bodyColor:'#7fa88f'}},
+      plugins:{legend:{labels:{color:'#9c9c97',font:{size:11},boxWidth:10}},
+        tooltip:{backgroundColor:'#1c1c1c',borderColor:'rgba(52,199,142,.3)',borderWidth:1,titleColor:'#34c78e',bodyColor:'#9c9c97'}},
       scales:{x:{stacked:true,ticks:{color:'#4a6454',font:{size:10}},grid:{color:'rgba(255,255,255,0.04)'}},
-              y:{stacked:true,ticks:{color:'#7fa88f',font:{size:10}},grid:{display:false}}},
+              y:{stacked:true,ticks:{color:'#9c9c97',font:{size:10}},grid:{display:false}}},
       animation:{duration:700}
     }
   });
@@ -1305,7 +1354,7 @@ function renderReactivationSummary(t){
 
 function renderReactivationTable(rows){
   const tbl = document.getElementById('rc-tbl');
-  if (!rows || !rows.length) { tbl.innerHTML = '<tr><td colspan="5" style="padding:14px;color:var(--text3)">Пока никого не передавали на отработку</td></tr>'; return; }
+  if (!rows || !rows.length) { tbl.innerHTML = '<tr><td colspan="5"><div class="empty-state"><img class="mascot-inline" src="assets/mascot/mascot-calm.png" alt=""><span>Пока никого не передавали на отработку</span></div></td></tr>'; return; }
   tbl.innerHTML = rows.map(row => {
     const st = RC_STATUS_STYLE[row.status] || {label: row.status_label, cls: ''};
     const revivedCell = row.tracked ? (row.revived ? '<span class="up">🎉 Ожил</span>' : '<span class="dn">Пока нет</span>') : '<span style="color:var(--text3)">—</span>';
@@ -1365,7 +1414,7 @@ function escHtml(s){
 
 let _map = null;
 let _mapReadyPromise = null;
-const MAP_COLORS = ['#4ad286','#2980b9','#f5a623','#e84040','#9b59b6','#1abc9c','#e67e22','#3498db'];
+const MAP_COLORS = ['#34c78e','#2980b9','#f5a623','#e84040','#9b59b6','#1abc9c','#e67e22','#3498db'];
 
 function dispName(name){ return (name||'').split('(')[0].trim(); }
 

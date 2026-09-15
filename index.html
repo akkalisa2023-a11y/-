@@ -87,7 +87,9 @@ input[type=file]{display:none}
 .kgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin-bottom:14px}
 .kc{background:var(--card);border:1px solid var(--border);border-left:2px solid transparent;border-radius:var(--radius);padding:14px 16px;position:relative;transition:border-color .2s}
 .kc:hover{border-color:var(--border2)}
-.kc.hero{border-left-color:var(--mint)}
+.kc.hero{border-left-color:var(--mint);background:linear-gradient(135deg, var(--mint-dim) 0%, var(--card) 55%)}
+.kc.fraud-card{background:linear-gradient(135deg, var(--red-dim) 0%, var(--card) 55%)}
+.kl-icon{display:inline-flex;vertical-align:-3px;margin-right:5px;opacity:.85}
 .kc.fraud-card{border-left-color:var(--red)}
 .kl{font-size:11.5px;color:var(--text2);margin-bottom:6px;font-weight:500}
 .kv{font-size:27px;font-weight:800;color:var(--text);line-height:1;letter-spacing:-0.4px;font-variant-numeric:tabular-nums}
@@ -123,7 +125,7 @@ input[type=file]{display:none}
 
 /* TABLE */
 table{width:100%;border-collapse:collapse;font-size:12px}
-th{text-align:left;padding:7px 9px;font-weight:600;font-size:10px;color:var(--text3);border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.5px;white-space:nowrap}
+th{text-align:left;padding:7px 9px;font-weight:600;font-size:11px;color:var(--text3);border-bottom:1px solid var(--border);white-space:nowrap}
 td{padding:7px 9px;border-bottom:1px solid rgba(255,255,255,.04);color:var(--text2);transition:.12s}
 tr:hover td{background:var(--mint-dim);color:var(--text)}
 tr:last-child td{border-bottom:none}
@@ -348,19 +350,19 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
   <div class="kgrid" id="kpi-sv"></div>
   <div class="g2">
     <div class="card">
-      <div class="ct"><span class="dot"></span>Топ торговых — активации</div>
+      <div class="ct"><span style="color:var(--mint)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M8 21h8M12 17v4M17 5h3a1 1 0 0 1 1 1c0 3-2 5-4 5M7 5H4a1 1 0 0 0-1 1c0 3 2 5 4 5"/><path d="M7 3h10v6a5 5 0 0 1-10 0V3z"/></svg></span>Топ торговых — активации</div>
       <div id="top-tp-sv"></div>
     </div>
     <div class="card">
-      <div class="ct"><span class="dot"></span>По операторам</div>
+      <div class="ct"><span style="color:var(--mint)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg></span>По операторам</div>
       <div class="cw" style="height:200px"><canvas id="opsChart"></canvas></div>
     </div>
     <div class="card full">
-      <div class="ct"><span class="dot"></span>Динамика активаций по месяцам</div>
+      <div class="ct"><span style="color:var(--mint)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M23 6l-9.5 9.5-5-5L1 18"/><path d="M17 6h6v6"/></svg></span>Динамика активаций по месяцам</div>
       <div class="cw" style="height:165px"><canvas id="mainChart"></canvas></div>
     </div>
     <div class="card full">
-      <div class="ct"><span class="dot-red"></span>Фрод по торговым — топ нарушителей</div>
+      <div class="ct"><span style="color:var(--red)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>Фрод по торговым — топ нарушителей</div>
       <div id="fraud-tp-sv"></div>
     </div>
   </div>
@@ -369,27 +371,27 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
 <!-- ТОРГОВЫЕ -->
 <div id="ttp" style="display:none">
   <div class="card" style="margin-bottom:12px">
-    <div class="ct"><span class="dot"></span>Рейтинг торговых <span id="tp-month-lbl" style="font-size:10px;color:var(--text3);text-transform:none;font-weight:400;margin-left:4px"></span></div>
+    <div class="ct"><span style="color:var(--mint)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M8 21h8M12 17v4M17 5h3a1 1 0 0 1 1 1c0 3-2 5-4 5M7 5H4a1 1 0 0 0-1 1c0 3 2 5 4 5"/><path d="M7 3h10v6a5 5 0 0 1-10 0V3z"/></svg></span>Рейтинг торговых <span id="tp-month-lbl" style="font-size:10px;color:var(--text3);text-transform:none;font-weight:400;margin-left:4px"></span></div>
     <table>
-      <thead><tr><th>#</th><th>Торговый</th><th>Акт.</th><th>Прогноз</th><th>Прогноз без фрода</th><th>Пред.</th><th>Партнёров</th><th>3+</th><th>10+</th><th>🚨 Фрод</th><th>% фрод</th><th>Тренд</th></tr></thead>
+      <thead><tr><th>#</th><th>Торговый</th><th>Акт.</th><th>Прогноз</th><th>Прогноз без фрода</th><th>Пред.</th><th>Партнёров</th><th>3+</th><th>10+</th><th>Фрод</th><th>% фрод</th><th>Тренд</th></tr></thead>
       <tbody id="tp-tbl"></tbody>
     </table>
   </div>
   <div class="g2">
     <div class="card">
-      <div class="ct"><span class="dot"></span>Топ-10 активации</div>
+      <div class="ct"><span style="color:var(--mint)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M23 6l-9.5 9.5-5-5L1 18"/><path d="M17 6h6v6"/></svg></span>Топ-10 активации</div>
       <div id="tp-bar-top"></div>
     </div>
     <div class="card">
-      <div class="ct"><span class="dot-red"></span>Топ фрода у ТП</div>
+      <div class="ct"><span style="color:var(--red)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>Топ фрода у ТП</div>
       <div id="tp-bar-fraud"></div>
     </div>
     <div class="card">
-      <div class="ct"><span class="dot"></span>Партнёров у ТП</div>
+      <div class="ct"><span style="color:var(--mint)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>Партнёров у ТП</div>
       <div id="tp-bar-part"></div>
     </div>
     <div class="card">
-      <div class="ct"><span class="dot-amber"></span>% фрода у ТП</div>
+      <div class="ct"><span style="color:var(--amber)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>% фрода у ТП</div>
       <div id="tp-bar-fraud-pct"></div>
     </div>
   </div>
@@ -406,9 +408,9 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
     <div class="sc" onclick="seg(this,'drop')"><div class="sn" style="color:var(--red)">↓</div><div class="sl">Упали</div></div>
   </div>
   <div class="card">
-    <div class="ct"><span class="dot"></span>Партнёры (Ритейл) <span id="pr-month-lbl" style="font-size:10px;color:var(--text3);text-transform:none;font-weight:400;margin-left:4px"></span></div>
+    <div class="ct"><span style="color:var(--mint)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>Партнёры (Ритейл) <span id="pr-month-lbl" style="font-size:10px;color:var(--text3);text-transform:none;font-weight:400;margin-left:4px"></span></div>
     <table>
-      <thead><tr><th>#</th><th>Партнёр</th><th>Торговый</th><th>Тек.</th><th>Прогноз</th><th>Пред.</th><th>🚨 Фрод</th><th>% фрод</th><th>Тренд</th><th>Сегмент</th></tr></thead>
+      <thead><tr><th>#</th><th>Партнёр</th><th>Торговый</th><th>Тек.</th><th>Прогноз</th><th>Пред.</th><th>Фрод</th><th>% фрод</th><th>Тренд</th><th>Сегмент</th></tr></thead>
       <tbody id="pr-tbl"></tbody>
     </table>
   </div>
@@ -423,11 +425,11 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
   <div class="kgrid" id="kpi-at"></div>
   <div class="g2">
     <div class="card full">
-      <div class="ct"><span class="dot"></span>Привлечение: уникальные vs субдилеры</div>
+      <div class="ct"><span style="color:var(--mint)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><path d="M20 8v6M23 11h-6"/></svg></span>Привлечение: уникальные vs субдилеры</div>
       <div class="cw" style="height:280px"><canvas id="privlChart"></canvas></div>
     </div>
     <div class="card full">
-      <div class="ct"><span class="dot"></span>Детализация</div>
+      <div class="ct"><span style="color:var(--mint)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></span>Детализация</div>
       <table>
         <thead><tr><th>#</th><th>Торговый</th><th>Всего</th><th>Уникальных</th><th>Субдилеров</th><th>% уникальных</th></tr></thead>
         <tbody id="privl-tbl"></tbody>
@@ -465,11 +467,11 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
     <div class="map-wrap"><div id="map-canvas"></div></div>
   </div>
   <div class="card full" style="margin-top:12px">
-    <div class="ct"><span class="dot"></span>Кто отметился / не отметился сегодня</div>
+    <div class="ct"><span style="color:var(--mint)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/></svg></span>Кто отметился / не отметился сегодня</div>
     <div class="checkin-legend" id="checkin-legend"></div>
   </div>
   <div class="card full" style="margin-top:12px">
-    <div class="ct"><span class="dot"></span>Фото с точек чек-ина</div>
+    <div class="ct"><span style="color:var(--mint)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></span>Фото с точек чек-ина</div>
     <div class="photo-gallery" id="checkin-gallery"></div>
   </div>
 </div>
@@ -940,20 +942,24 @@ function renderKPI(d,dp,pv){
     forecastNoFraudSub = `${pctNF}% выполнения`;
   }
 
+  const icTrend = `<svg class="kl-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 6l-9.5 9.5-5-5L1 18"/><path d="M17 6h6v6"/></svg>`;
+  const icAlertTri = `<svg class="kl-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>`;
+  const icAlertCircle = `<svg class="kl-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>`;
+
   document.getElementById('kpi-sv').innerHTML=`
     <div class="kc"><div class="kl">Активаций (факт)</div><div class="kv">${d.total.toLocaleString('ru')}</div><div class="ks ${tCls}">${tStr}</div></div>
-    ${forecast ? `<div class="kc hero"><div class="kl">📈 Прогноз на месяц</div><div class="kv" style="color:var(--mint)">${forecastStr}</div><div class="ks">${forecastSub}</div></div>` : ''}
+    ${forecast ? `<div class="kc hero"><div class="kl">${icTrend}Прогноз на месяц</div><div class="kv" style="color:var(--mint)">${forecastStr}</div><div class="ks">${forecastSub}</div></div>` : ''}
     <div class="kc"><div class="kl">Активных партнёров</div><div class="kv">${d.ap}</div><div class="ks">${dp?`vs ${dp.ap} пред.`:'&nbsp;'}</div></div>
     <div class="kc"><div class="kl">Партнёров 3+</div><div class="kv">${d.p3}</div><div class="ks">${Math.round(d.p3/d.ap*100)}% от активных</div></div>
     <div class="kc"><div class="kl">Партнёров 10+</div><div class="kv">${d.p10}</div><div class="ks">${Math.round(d.p10/d.ap*100)}% от активных</div></div>
     <div class="kc fraud-card" style="display:flex;align-items:center;justify-content:space-between;gap:10px;${fraudPct>10?'grid-column:span 2':''}">
-      <div><div class="kl">🚨 Фрод активаций</div><div class="kv ${fraudCls}">${d.fraud||0}</div><div class="ks dn">${fraudPct}% от всех</div></div>
+      <div><div class="kl">${icAlertTri}Фрод активаций</div><div class="kv ${fraudCls}">${d.fraud||0}</div><div class="ks dn">${fraudPct}% от всех</div></div>
       ${fraudPct>10 ? `<img class="mascot-inline valera" style="width:38px" src="assets/mascot/mascot-premium.png" alt="" title="Валера недоволен">` : ''}
     </div>
     <div class="kc"><div class="kl">Ср. акт. / партнёр</div><div class="kv">${d.avg}</div><div class="ks">${dp?`vs ${dp.avg} пред.`:'&nbsp;'}</div></div>
-    ${d.unassigned ? `<div class="kc" style="border-color:rgba(230,120,40,.4)"><div class="kl">⚠️ Без Торгового/Ритейла</div><div class="kv" style="color:#e67828">${d.unassigned}</div><div class="ks">не попали в разбивку по людям</div></div>` : ''}
+    ${d.unassigned ? `<div class="kc" style="border-color:rgba(230,120,40,.4)"><div class="kl" style="color:#e67828">${icAlertCircle}Без Торгового/Ритейла</div><div class="kv" style="color:#e67828">${d.unassigned}</div><div class="ks">не попали в разбивку по людям</div></div>` : ''}
     <div class="kc"><div class="kl">Активаций без фрода (факт)</div><div class="kv">${(d.total_no_fraud ?? (d.total-(d.fraud||0))).toLocaleString('ru')}</div><div class="ks">&nbsp;</div></div>
-    ${forecastNoFraud ? `<div class="kc hero"><div class="kl">📈 Прогноз без фрода</div><div class="kv" style="color:var(--mint)">${forecastNoFraudStr}</div><div class="ks">${forecastNoFraudSub}</div></div>` : ''}
+    ${forecastNoFraud ? `<div class="kc hero"><div class="kl">${icTrend}Прогноз без фрода</div><div class="kv" style="color:var(--mint)">${forecastNoFraudStr}</div><div class="ks">${forecastNoFraudSub}</div></div>` : ''}
   `;
 }
 

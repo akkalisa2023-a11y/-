@@ -51,6 +51,13 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
   font-size:84px;font-weight:800;line-height:1;letter-spacing:-3px;
   color:rgba(255,255,255,.045);white-space:nowrap;user-select:none}
 .hero-band .hero-mascot{position:absolute;right:130px;bottom:-14px;height:128px;opacity:.92;filter:drop-shadow(0 8px 20px rgba(0,0,0,.4))}
+.hero-band .hero-mascot.peek{animation:mascotPeek .65s cubic-bezier(.34,1.56,.64,1) both}
+@keyframes mascotPeek{
+  0%{transform:translateY(85%) rotate(4deg);opacity:0}
+  55%{transform:translateY(-6%) rotate(-2deg);opacity:1}
+  75%{transform:translateY(2%) rotate(1deg)}
+  100%{transform:translateY(0) rotate(0)}
+}
 .hero-band .hero-text{position:relative;z-index:1;height:100%;display:flex;flex-direction:column;justify-content:center;padding:0 24px}
 .hero-band .hero-title{font-size:19px;font-weight:700;color:var(--text)}
 .hero-band .hero-sub{font-size:12.5px;color:var(--text2);margin-top:4px}
@@ -91,7 +98,7 @@ input[type=file]{display:none}
 .kc.fraud-card{background:linear-gradient(135deg, var(--red-dim) 0%, var(--card) 55%)}
 .kl-icon{display:inline-flex;vertical-align:-3px;margin-right:5px;opacity:.85}
 .kc.fraud-card{border-left-color:var(--red)}
-.kl{font-size:11.5px;color:var(--text2);margin-bottom:6px;font-weight:500}
+.kl{font-size:11.5px;color:var(--text2);margin-bottom:6px;font-weight:500;line-height:1.35;min-height:30px;display:flex;align-items:flex-start}
 .kv{font-size:27px;font-weight:800;color:var(--text);line-height:1;letter-spacing:-0.4px;font-variant-numeric:tabular-nums}
 .kv.red{color:var(--red)}
 .ks{font-size:11px;margin-top:5px;color:var(--text3)}
@@ -336,7 +343,7 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
   <div class="grid"></div>
   <div class="glow"></div>
   <div class="wordmark">СВЯЗЬ</div>
-  <img class="hero-mascot" src="assets/mascot/mascot-phone.png" alt="">
+  <img class="hero-mascot" id="hero-mascot-img" src="assets/mascot/mascot-phone.png" alt="">
   <div class="hero-text">
     <div class="hero-title">Агентство Связи</div>
     <div class="hero-sub">Партнёрская сеть · красивые номера и выгодные тарифы</div>
@@ -1316,6 +1323,20 @@ function sw(id,el){
   if(id==='ef')renderEfficiency();
   if(id==='mp'){initMapIfNeeded();loadCheckinsForDate();}
   if(id==='rc')loadReactivation();
+  peekMascot();
+}
+
+// Маскот "выглядывает" с лёгкой анимацией при каждом открытии вкладки —
+// и меняет позу случайно (из нейтральных поз), чтобы не примелькалась одна картинка.
+const MASCOT_POSES = ['mascot-phone','mascot-sitting','mascot-thoughtful','mascot-active'];
+function peekMascot(){
+  const img = document.getElementById('hero-mascot-img');
+  if(!img) return;
+  const pick = MASCOT_POSES[Math.floor(Math.random()*MASCOT_POSES.length)];
+  img.src = `assets/mascot/${pick}.png`;
+  img.classList.remove('peek');
+  void img.offsetWidth; // форсируем reflow, чтобы анимация перезапустилась даже на той же позе
+  img.classList.add('peek');
 }
 
 
@@ -2129,6 +2150,7 @@ applyAdminUI();
 
 renderMonthBtns();
 render();
+peekMascot();
 // Подгружаем актуальные данные с сервера при открытии
 if (BOT_URL) setTimeout(fetchServerData, 300);
 </script>

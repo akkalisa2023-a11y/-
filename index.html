@@ -959,7 +959,7 @@ function renderKPI(d,dp,pv){
     <div class="kc"><div class="kl">Активных партнёров</div><div class="kv">${d.ap}</div><div class="ks">${dp?`vs ${dp.ap} пред.`:'&nbsp;'}</div></div>
     <div class="kc"><div class="kl">Партнёров 3+</div><div class="kv">${d.p3}</div><div class="ks">${Math.round(d.p3/d.ap*100)}% от активных</div></div>
     <div class="kc"><div class="kl">Партнёров 10+</div><div class="kv">${d.p10}</div><div class="ks">${Math.round(d.p10/d.ap*100)}% от активных</div></div>
-    <div class="kc fraud-card" style="display:flex;align-items:center;justify-content:space-between;gap:10px;${fraudPct>10?'grid-column:span 2':''}">
+    <div class="kc fraud-card" style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;${fraudPct>10?'grid-column:span 2':''}">
       <div><div class="kl">${icAlertTri}Фрод активаций</div><div class="kv ${fraudCls}">${d.fraud||0}</div><div class="ks dn">${fraudPct}% от всех</div></div>
       ${fraudPct>10 ? `<img class="mascot-inline valera" style="width:38px" src="assets/mascot/mascot-premium.png" alt="" title="Валера недоволен">` : ''}
     </div>

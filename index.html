@@ -421,6 +421,18 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
       <tbody id="pr-tbl"></tbody>
     </table>
   </div>
+
+  <div class="card full" style="margin-top:12px">
+    <div class="ct" style="justify-content:space-between">
+      <span style="display:flex;align-items:center;gap:7px"><span style="color:var(--red)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M23 18l-9.5-9.5-5 5L1 6"/><path d="M17 18h6v-6"/></svg></span>Спад за 3 месяца подряд</span>
+      <button class="upload-btn" onclick="checkThreeMonthDecline()" style="padding:6px 12px">📉 Проверить</button>
+    </div>
+    <div id="pr-3mo-note" style="font-size:12px;color:var(--text3);margin-bottom:8px;display:none"></div>
+    <table id="pr-3mo-wrap" style="display:none">
+      <thead><tr id="pr-3mo-head"></tr></thead>
+      <tbody id="pr-3mo-tbl"></tbody>
+    </table>
+  </div>
 </div>
 
 <!-- ПРИВЛЕЧЕНИЕ -->
@@ -1160,6 +1172,53 @@ function seg(el,filter){
   document.querySelectorAll('.sc').forEach(e=>e.classList.remove('on'));
   el.classList.add('on');
   renderPRTable(prAllCache,filter);
+}
+
+function checkThreeMonthDecline(){
+  const months = sortedMonths(); // по возрастанию: ..., позапрошлый, прошлый, текущий
+  if(months.length < 3){
+    document.getElementById('pr-3mo-note').style.display='block';
+    document.getElementById('pr-3mo-note').textContent = '⚠️ Нужно минимум 3 месяца с загруженными данными, сейчас доступно: ' + months.length;
+    document.getElementById('pr-3mo-wrap').style.display='none';
+    return;
+  }
+  const last3 = months.slice(-3); // [m3_старый, m2, m1_текущий]
+  const [m3,m2,m1] = last3;
+  const mapFor = m => {
+    const map = {};
+    (DB.months[m]?.partners || []).forEach(p => { map[p.r+'|||'+p.t] = p.acts; });
+    return map;
+  };
+  const map1 = mapFor(m1), map2 = mapFor(m2), map3 = mapFor(m3);
+  const keys = new Set([...Object.keys(map1), ...Object.keys(map2), ...Object.keys(map3)]);
+
+  const declining = [];
+  keys.forEach(k => {
+    const a3 = map3[k]||0, a2 = map2[k]||0, a1 = map1[k]||0;
+    // строго убывает все 3 месяца подряд: было > стало > сейчас
+    if(a3>0 && a3>a2 && a2>a1){
+      const [r,t] = k.split('|||');
+      declining.push({r,t,a3,a2,a1, drop:a3-a1, drop_pct:Math.round((a3-a1)/a3*100)});
+    }
+  });
+  declining.sort((a,b)=>b.drop_pct-a.drop_pct);
+
+  const note = document.getElementById('pr-3mo-note');
+  note.style.display='block';
+  note.textContent = declining.length
+    ? `Партнёров со спадом все 3 месяца подряд (${fmtM(m3)} → ${fmtM(m2)} → ${fmtM(m1)}): ${declining.length}`
+    : `Партнёров со спадом все 3 месяца подряд (${fmtM(m3)} → ${fmtM(m2)} → ${fmtM(m1)}): не найдено 🎉`;
+
+  document.getElementById('pr-3mo-head').innerHTML =
+    `<th>#</th><th>Партнёр</th><th>Торговый</th><th>${fmtM(m3)}</th><th>${fmtM(m2)}</th><th>${fmtM(m1)}</th><th>Падение</th>`;
+  document.getElementById('pr-3mo-tbl').innerHTML = declining.map((p,i)=>`<tr>
+    <td>${i+1}</td>
+    <td style="color:var(--text)">${escHtml(p.r)}</td>
+    <td style="color:var(--text3)">${escHtml(p.t)}</td>
+    <td>${p.a3}</td><td>${p.a2}</td><td>${p.a1}</td>
+    <td class="dn">↓${p.drop} (${p.drop_pct}%)</td>
+  </tr>`).join('');
+  document.getElementById('pr-3mo-wrap').style.display = declining.length ? '' : 'none';
 }
 
 function renderPRTable(all,filter){

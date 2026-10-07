@@ -1054,18 +1054,32 @@ def reconcile_reactivations(db, cur_key):
     if changed:
         save_db(db)
 
-def reconcile_partner_trends(db, cur_key, prev_key, threshold_pct=20):
-    """Вызывается после каждой заливки активаций — сравнивает всех партнёров
-    (не только реактивацию) с прошлым месяцем, шлёт ТП список тех, кто ушёл
-    в ноль или заметно просел. Уведомляет только про НОВУЮ динамику —
-    если партнёр уже в этом статусе и про него уже сообщали, молчим."""
+def reconcile_partner_trends(db, cur_key, prev_key):
+    """Вызывается после каждой заливки активаций. Сравнивает ПРОГНОЗ партнёра
+    на конец месяца (по текущему темпу — тем же способом, что вкладка
+    «Партнёры» в дашборде) с его ФАКТОМ за прошлый месяц и шлёт торговому
+    список тех, кто идёт вниз. Порога нет: подсвечивается любое снижение,
+    а тот, кто в прошлом месяце активировал хоть раз, а сейчас на нуле
+    (или вообще пропал из отчёта) — всегда. Уведомляем только при СМЕНЕ
+    статуса в рамках месяца — про того же партнёра в том же статусе повторно
+    не пишем."""
+    from html import escape as _esc
     if not prev_key:
         return
-    cur_partners  = {p.get("r", "").strip(): p for p in db["months"].get(cur_key, {}).get("partners", [])}
+    cur_month = db["months"].get(cur_key, {})
+    cur_partners  = {p.get("r", "").strip(): p for p in cur_month.get("partners", [])}
     prev_partners = {p.get("r", "").strip(): p for p in db["months"].get(prev_key, {}).get("partners", [])}
     trend_state = db.setdefault("partner_trend_state", {})
 
-    by_tp = {}  # {tp_name: {"zero": [names], "decline": [(name, pct)]}}
+    last_date = cur_month.get("last_date")
+    days_passed, days_in_month = days_passed_for_forecast(last_date)
+
+    def forecast_for(acts):
+        if days_passed and days_in_month and days_passed > 0:
+            return round(acts / days_passed * days_in_month)
+        return acts
+
+    by_tp = {}  # {tp_name: {"zero": [(name, prev)], "decline": [(name, prev, forecast, pct)]}}
     for name, pp in prev_partners.items():
         prev_acts = pp.get("acts", 0)
         if prev_acts <= 0:
@@ -1073,40 +1087,75 @@ def reconcile_partner_trends(db, cur_key, prev_key, threshold_pct=20):
         cp = cur_partners.get(name)
         cur_acts = cp.get("acts", 0) if cp else 0
         tp_name = (cp.get("t") if cp else pp.get("t"))
+        forecast_acts = forecast_for(cur_acts)
 
         if cur_acts == 0:
             status = "zero"
-        elif cur_acts < prev_acts * (1 - threshold_pct / 100):
+        elif forecast_acts < prev_acts and round((prev_acts - forecast_acts) / prev_acts * 100) >= 20:
             status = "decline"
         else:
             status = "ok"
 
-        state = trend_state.setdefault(name, {"status": "ok", "notified_status": "none"})
-        state["status"] = status
+        # Состояние ведём в разрезе месяца: каждый месяц — новое сравнение,
+        # поэтому "уже сообщали" в прошлом месяце не глушит уведомление в этом.
+        key = f"{cur_key}|{name}"
+        if status == "ok":
+            if key in trend_state:
+                trend_state[key]["notified_status"] = "none"  # восстановился — при новом падении уведомим заново
+            continue
+        state = trend_state.setdefault(key, {"notified_status": "none"})
+        if state.get("notified_status") == status:
+            continue
+        state["notified_status"] = status
+        bucket = by_tp.setdefault(tp_name, {"zero": [], "decline": []})
+        if status == "zero":
+            bucket["zero"].append((name, prev_acts))
+        else:
+            pct = round((prev_acts - forecast_acts) / prev_acts * 100)
+            bucket["decline"].append((name, prev_acts, forecast_acts, pct))
 
-        if status in ("zero", "decline") and state.get("notified_status") != status:
-            state["notified_status"] = status
-            bucket = by_tp.setdefault(tp_name, {"zero": [], "decline": []})
-            if status == "zero":
-                bucket["zero"].append(name)
-            else:
-                pct = round((prev_acts - cur_acts) / prev_acts * 100)
-                bucket["decline"].append((name, pct))
-        elif status == "ok":
-            state["notified_status"] = "none"  # ожил/восстановился — при следующем падении уведомим заново
+    day_note = ""
+    if last_date:
+        try:
+            day_note = f"<i>Прогноз по темпу на {int(last_date.split('-')[2])}-е число, сравнение с прошлым месяцем.</i>"
+        except Exception:
+            day_note = ""
 
+    all_tp_names = get_all_tp_names(db, include_inactive=True)
+    tp_by_norm = {norm_name(n): n for n in all_tp_names}
+    contacts = db.get("tp_contacts", {})
+
+    header = "⚠️ <b>Обрати внимание на партнёров:</b>"
     for tp_name, bucket in by_tp.items():
         if not tp_name:
             continue
-        contact = db.get("tp_contacts", {}).get(tp_name)
+        tp_canonical = tp_by_norm.get(norm_name(tp_name), tp_name)
+        contact = contacts.get(tp_canonical)
+        if not contact:
+            matched = match_tp_name(tp_canonical, contacts.keys())
+            contact = contacts.get(matched) if matched else None
         if not (contact and contact.get("id")):
             continue
-        lines = ["⚠️ <b>Обрати внимание на партнёров:</b>", ""]
-        for name in bucket["zero"]:
-            lines.append(f"🔴 {name} — ушёл в ноль (была активность в прошлом месяце)")
-        for name, pct in bucket["decline"]:
-            lines.append(f"🟡 {name} — падение на {pct}% к прошлому месяцу")
-        send_message("\n".join(lines), chat_id=contact["id"])
+        lines = []
+        for name, prev in sorted(bucket["zero"], key=lambda x: -x[1]):
+            lines.append(f"🔴 {_esc(name)} — сейчас 0 (в прошлом месяце было {prev})")
+        for name, prev, fc, pct in sorted(bucket["decline"], key=lambda x: -x[3]):
+            lines.append(f"🟡 {_esc(name)} — прогноз {fc} против {prev} в прошлом месяце (−{pct}%)")
+
+        # Лимит Telegram — 4096 символов на сообщение; без порога список может
+        # быть длинным, поэтому режем на несколько сообщений.
+        head = header + ("\n" + day_note if day_note else "")
+        parts, cur_lines, cur_len = [], [], len(head)
+        for ln in lines:
+            if cur_lines and cur_len + len(ln) + 1 > 3500:
+                parts.append(cur_lines)
+                cur_lines, cur_len = [], len(head)
+            cur_lines.append(ln)
+            cur_len += len(ln) + 1
+        if cur_lines:
+            parts.append(cur_lines)
+        for chunk in parts:
+            send_message(head + "\n\n" + "\n".join(chunk), chat_id=contact["id"])
 
     save_db(db)
 

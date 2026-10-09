@@ -1174,6 +1174,25 @@ function seg(el,filter){
   renderPRTable(prAllCache,filter);
 }
 
+// Возвращает функцию "факт -> прогноз на конец месяца" для месяца с данной последней датой.
+// Формула та же, что на вкладке "Партнёры" (buildPRAll): факт / прошедшие_дни * дней_в_месяце,
+// если последний день с данными — сегодня, считаем дробную долю суток.
+function monthForecaster(lastDate){
+  let daysPassed=null, daysInMonth=null;
+  if (lastDate) {
+    const [y,mo,day] = lastDate.split('-').map(Number);
+    daysInMonth = new Date(y, mo, 0).getDate();
+    daysPassed = day;
+    const now = moscowNow();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    if (lastDate === todayStr) {
+      const fracToday = Math.max((now.getHours()*60 + now.getMinutes()) / (24*60), 0.05);
+      daysPassed = (day - 1) + fracToday;
+    }
+  }
+  return acts => (daysPassed && daysInMonth) ? Math.round(acts / daysPassed * daysInMonth) : acts;
+}
+
 function checkThreeMonthDecline(){
   const months = sortedMonths(); // по возрастанию: ..., позапрошлый, прошлый, текущий
   if(months.length < 3){
@@ -1192,13 +1211,19 @@ function checkThreeMonthDecline(){
   const map1 = mapFor(m1), map2 = mapFor(m2), map3 = mapFor(m3);
   const keys = new Set([...Object.keys(map1), ...Object.keys(map2), ...Object.keys(map3)]);
 
+  // Два прошлых месяца — полные, берём факт. Последний месяц неполный, поэтому
+  // сравниваем его ПРОГНОЗ на конец месяца (иначе любой партнёр "падает" просто
+  // потому, что месяц ещё не закончился).
+  const forecast1 = monthForecaster(DB.months[m1]?.last_date);
+
   const declining = [];
   keys.forEach(k => {
-    const a3 = map3[k]||0, a2 = map2[k]||0, a1 = map1[k]||0;
-    // строго убывает все 3 месяца подряд: было > стало > сейчас
+    const a3 = map3[k]||0, a2 = map2[k]||0, a1fact = map1[k]||0;
+    const a1 = forecast1(a1fact);
+    // строго убывает все 3 месяца подряд: было > стало > прогноз на сейчас
     if(a3>0 && a3>a2 && a2>a1){
       const [r,t] = k.split('|||');
-      declining.push({r,t,a3,a2,a1, drop:a3-a1, drop_pct:Math.round((a3-a1)/a3*100)});
+      declining.push({r,t,a3,a2,a1,a1fact, drop:a3-a1, drop_pct:Math.round((a3-a1)/a3*100)});
     }
   });
   declining.sort((a,b)=>b.drop_pct-a.drop_pct);
@@ -1206,16 +1231,16 @@ function checkThreeMonthDecline(){
   const note = document.getElementById('pr-3mo-note');
   note.style.display='block';
   note.textContent = declining.length
-    ? `Партнёров со спадом все 3 месяца подряд (${fmtM(m3)} → ${fmtM(m2)} → ${fmtM(m1)}): ${declining.length}`
-    : `Партнёров со спадом все 3 месяца подряд (${fmtM(m3)} → ${fmtM(m2)} → ${fmtM(m1)}): не найдено 🎉`;
+    ? `Партнёров со спадом все 3 месяца подряд (${fmtM(m3)} → ${fmtM(m2)} → ${fmtM(m1)}, последний месяц — по прогнозу): ${declining.length}`
+    : `Партнёров со спадом все 3 месяца подряд (${fmtM(m3)} → ${fmtM(m2)} → ${fmtM(m1)}, последний месяц — по прогнозу): не найдено 🎉`;
 
   document.getElementById('pr-3mo-head').innerHTML =
-    `<th>#</th><th>Партнёр</th><th>Торговый</th><th>${fmtM(m3)}</th><th>${fmtM(m2)}</th><th>${fmtM(m1)}</th><th>Падение</th>`;
+    `<th>#</th><th>Партнёр</th><th>Торговый</th><th>${fmtM(m3)}</th><th>${fmtM(m2)}</th><th>${fmtM(m1)} (прогноз / факт)</th><th>Падение</th>`;
   document.getElementById('pr-3mo-tbl').innerHTML = declining.map((p,i)=>`<tr>
     <td>${i+1}</td>
     <td style="color:var(--text)">${escHtml(p.r)}</td>
     <td style="color:var(--text3)">${escHtml(p.t)}</td>
-    <td>${p.a3}</td><td>${p.a2}</td><td>${p.a1}</td>
+    <td>${p.a3}</td><td>${p.a2}</td><td>${p.a1} <span style="color:var(--text3)">/ ${p.a1fact}</span></td>
     <td class="dn">↓${p.drop} (${p.drop_pct}%)</td>
   </tr>`).join('');
   document.getElementById('pr-3mo-wrap').style.display = declining.length ? '' : 'none';

@@ -42,6 +42,10 @@ REACTIVATION_REMINDER_HOURS = float(os.environ.get("REACTIVATION_REMINDER_HOURS"
 # снова — повторяется (не один раз), пока статус не сменится на другой
 NO_ANSWER_REMINDER_DAYS = float(os.environ.get("NO_ANSWER_REMINDER_DAYS", "3"))
 
+# Сколько напоминаний по реактивации один торговый получает за один запуск
+# планировщика (раз в 30 мин) — чтобы после выходных не прилетело всё разом
+MAX_REMINDERS_PER_TP_RUN = int(os.environ.get("MAX_REMINDERS_PER_TP_RUN", "3"))
+
 # Во сколько часов (по времени сервера) слать запрос геолокации агентам, через запятую
 CHECKIN_HOURS = os.environ.get("CHECKIN_HOURS", "10,13,16,18")
 # Дни недели для чек-инов — по умолчанию будни (пн-пт), без выходных.
@@ -2160,12 +2164,19 @@ def check_reactivation_reminders():
       связаться, поэтому напоминание повторяется каждые NO_ANSWER_REMINDER_DAYS
       дней ("попробуй ещё раз"), а не один раз — пока статус не сменится."""
     try:
+        # Торговые по выходным не работают — в сб/вс напоминания не шлём.
+        # Время отсчёта не сдвигаем, поэтому всё, что "выпало" на выходные,
+        # уйдёт в понедельник после 9:00 по Москве (а не ночью в 00:00).
+        _n = now_msk()
+        if _n.weekday() >= 5 or _n.hour < 9 or _n.hour >= 20:
+            return
         db = load_db()
         reactivation = db.get("reactivation", {})
         if not reactivation:
             return
         now = now_msk()
         changed = False
+        sent_per_tp = {}
         for req_id, req in reactivation.items():
             status = req.get("status")
             if status not in ("pending_tp", "in_progress", "no_answer"):
@@ -2184,6 +2195,13 @@ def check_reactivation_reminders():
             threshold = timedelta(days=NO_ANSWER_REMINDER_DAYS) if is_no_answer else timedelta(hours=REACTIVATION_REMINDER_HOURS)
             if now - since < threshold:
                 continue
+
+            # Разносим: не больше MAX_REMINDERS_PER_TP_RUN напоминаний одному торговому
+            # за один запуск (раз в 30 мин). Остальные остаются "просроченными"
+            # и уйдут при следующих запусках — так в понедельник не придёт всё разом.
+            if sent_per_tp.get(req.get("tp"), 0) >= MAX_REMINDERS_PER_TP_RUN:
+                continue
+            sent_per_tp[req.get("tp")] = sent_per_tp.get(req.get("tp"), 0) + 1
 
             partner = req["partner"]
             partner_display = req.get("partner_full", partner)

@@ -2,6 +2,7 @@ import os, json, logging, random, calendar, re
 from zoneinfo import ZoneInfo
 import uuid
 import fcntl
+import time, threading
 
 # Railway крутится в UTC, а вся команда — по Москве. Чтобы метки времени
 # в базе (чек-ины, разборы, отчёты) не съезжали на 3 часа, везде вместо
@@ -1414,6 +1415,337 @@ def check_missed_checkins():
     except Exception as e:
         logging.error(f"check_missed_checkins error: {e}")
 
+# ── АВТОРАЗДАЧА СПЯЩИХ ПАРТНЁРОВ (/batch) ─────────────────────
+# Временная функция. Выключается переменной BATCH_ENABLED=0 в Railway —
+# тогда /batch и заливка списка перестают работать, всё остальное (в т.ч.
+# уже выданные партнёры, статусы, напоминания) продолжает жить как раньше.
+# Список спящих лежит в ОТДЕЛЬНОМ файле на Volume (не в dash_data.json и
+# не в /data для дашборда), чтобы его можно было удалить, ничего не ломая.
+
+BATCH_ENABLED = os.environ.get("BATCH_ENABLED", "1") != "0"
+BATCH_DEFAULT_SIZE = int(os.environ.get("BATCH_SIZE", "50"))
+SLEEPING_FILE = DATA_DIR / "sleeping_list.json"
+
+def load_sleeping_items():
+    try:
+        if SLEEPING_FILE.exists():
+            data = json.loads(SLEEPING_FILE.read_text())
+            return data.get("items", []) if isinstance(data, dict) else []
+    except Exception as e:
+        logging.error(f"load_sleeping_items error: {e}")
+    return []
+
+def handle_sleeping_upload(msg, user_id):
+    """Владелец прислал боту файл sleeping_list.json — заменяем очередь спящих.
+    Уже выданные партнёры не потеряются и не задвоятся: при раздаче бот
+    всё равно пропускает тех, у кого RT-код уже есть в реактивации."""
+    if not BATCH_ENABLED:
+        send_message("Автораздача отключена (BATCH_ENABLED=0 в Railway).", chat_id=user_id)
+        return
+    doc = msg.get("document", {}) or {}
+    name = (doc.get("file_name") or "").lower()
+    if not name.endswith(".json"):
+        send_message("Жду файл <b>sleeping_list.json</b> — этот не подходит.", chat_id=user_id)
+        return
+    if doc.get("file_size", 0) > 15_000_000:
+        send_message("Файл слишком большой (лимит 15 МБ).", chat_id=user_id)
+        return
+    try:
+        info = requests.get(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/getFile",
+            params={"file_id": doc["file_id"]}, timeout=15
+        ).json()
+        if not info.get("ok"):
+            send_message("Не смог получить файл от Telegram, пришли ещё раз.", chat_id=user_id)
+            return
+        raw = requests.get(
+            f"https://api.telegram.org/file/bot{BOT_TOKEN}/{info['result']['file_path']}", timeout=60
+        ).content
+        data = json.loads(raw.decode("utf-8"))
+        items = data.get("items") if isinstance(data, dict) else None
+        if not isinstance(items, list) or not items:
+            send_message("В файле нет списка партнёров — проверь, что это sleeping_list.json.", chat_id=user_id)
+            return
+        clean = []
+        for it in items:
+            if isinstance(it, dict) and it.get("r") and it.get("n"):
+                it["r"] = str(it["r"]).strip().upper()
+                clean.append(it)
+        if not clean:
+            send_message("Не нашёл ни одного партнёра с RT-кодом и ФИО.", chat_id=user_id)
+            return
+        SLEEPING_FILE.write_text(json.dumps({"uploaded_at": now_msk().isoformat(), "items": clean}, ensure_ascii=False))
+        db = load_db()
+        queue = batch_queue(db, clean)
+        send_message(
+            f"✅ Список загружен: {len(clean)} партнёров, из них ещё не выдано {len(queue)}.\n"
+            f"Раздать на сегодня: /batch (или /batch 30 — другое количество).",
+            chat_id=user_id
+        )
+    except Exception as e:
+        logging.error(f"handle_sleeping_upload error: {e}")
+        send_message("Не получилось разобрать файл. Пришли sleeping_list.json ещё раз.", chat_id=user_id)
+
+def batch_queue(db, items):
+    """Очередь на раздачу: все, кого ещё не выдавали (по RT-коду, любой статус
+    в реактивации), по приоритету от большего к меньшему."""
+    used = {str(r.get("rt_code", "")).strip().upper() for r in db.get("reactivation", {}).values() if r.get("rt_code")}
+    queue = [it for it in items if it["r"] not in used]
+    queue.sort(key=lambda x: -(x.get("p") or 0))
+    return queue
+
+def _surname(name):
+    parts = clean_tp_name(name or "").split()
+    return parts[0].lower() if parts else ""
+
+def batch_active_contacts(db):
+    """Зарегистрированные в боте торговые, кроме уволенных. Второй список —
+    те из них, кто сейчас в отпуске (им ничего не выдаём)."""
+    inactive = set(db.get("inactive_tp", []))
+    active, on_vac = {}, {}
+    for name, c in db.get("tp_contacts", {}).items():
+        if not c.get("id") or name in inactive:
+            continue
+        (on_vac if is_on_vacation(db, name) else active)[name] = c
+    return active, on_vac
+
+def batch_select(db, queue, n, office_names):
+    """Раздаём первых n из очереди.
+    • Подканал МСК и аплайн = действующий торговый (по фамилии) → ему лично.
+      Если он в отпуске — пропускаем, партнёр остаётся в очереди.
+    • Всё остальное (Дилерский, Маркетинг, Сим-мастер, МСК с уволенным
+      аплайном) → общий пул, поровну между теми, кто сегодня в офисе.
+      Если офис не выбран — пул пропускаем."""
+    active, on_vac = batch_active_contacts(db)
+    by_surname = {_surname(nm): nm for nm in active if _surname(nm)}
+    vac_surnames = {_surname(nm) for nm in on_vac if _surname(nm)}
+    office = [nm for nm in office_names if nm in active]
+
+    assigned, rr, total = {}, 0, 0
+    skipped_vac = skipped_pool = 0
+    for it in queue:
+        if total >= n:
+            break
+        tp = None
+        if "МСК" in (it.get("s") or ""):
+            sn = _surname(it.get("u"))
+            if sn in by_surname:
+                tp = by_surname[sn]
+            elif sn in vac_surnames:
+                skipped_vac += 1
+                continue
+        if tp is None:
+            if not office:
+                skipped_pool += 1
+                continue
+            tp = office[rr % len(office)]
+            rr += 1
+        assigned.setdefault(tp, []).append(it)
+        total += 1
+    return assigned, skipped_vac, skipped_pool, total
+
+def batch_card_text(it):
+    lines = [it["n"], it["r"]]
+    details = []
+    if it.get("o"):
+        details.append(f"Оператор: {it['o']}")
+    if it.get("d"):
+        details.append(f"последняя активация {it['d']}")
+    if details:
+        lines.append(" · ".join(details))
+    extra = []
+    if it.get("t"):
+        extra.append(f"раньше ~{round(float(it['t']))} акт./мес")
+    if it.get("k"):
+        extra.append(f"ср. чек {it['k']} ₽")
+    if extra:
+        lines.append(" · ".join(extra))
+    return "\n".join(lines)
+
+def batch_create_records(db, assigned):
+    """Создаём записи реактивации — такие же, как при ручной выдаче через
+    /reactivate, поэтому кнопки, напоминания, «Закрепить» и вкладка
+    «Реактивация» в дашборде работают без изменений."""
+    now_iso = now_msk().isoformat()
+    react = db.setdefault("reactivation", {})
+    cards = {}  # {tp_name: [(req_id, full_text), ...]}
+    for tp, its in assigned.items():
+        for it in its:
+            req_id = uuid.uuid4().hex[:10]
+            full = batch_card_text(it)
+            react[req_id] = {
+                "partner": it["n"],
+                "partner_full": full,
+                "phone": "",
+                "rt_code": it["r"],
+                "tp": tp,
+                "status": "pending_tp",
+                "assigned_at": now_iso,
+                "closed_at": None,
+                "revived": False,
+                "notified_status": "none",
+                "last_touched_at": now_iso,
+                "reminded": False,
+                "source": "batch",
+            }
+            cards.setdefault(tp, []).append((req_id, full))
+    return cards
+
+def _send_batch_cards(cards, chat_ids):
+    """Шлём карточки в отдельном потоке и с паузами — 50 сообщений подряд
+    упираются в лимиты Telegram, а вебхук не должен висеть десятки секунд."""
+    from html import escape as _esc
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    for tp, items in cards.items():
+        chat_id = chat_ids.get(tp)
+        if not chat_id:
+            continue
+        try:
+            send_message(
+                f"📋 Валера раздаёт обзвон: сегодня тебе <b>{len(items)}</b> партнёров. "
+                f"Карточки ниже — отмечай результат кнопками.",
+                chat_id=chat_id
+            )
+        except Exception as e:
+            logging.error(f"_send_batch_cards header error: {e}")
+        for req_id, full in items:
+            payload = {
+                "chat_id": chat_id,
+                "text": f"🎯 На отработку:\n<b>{_esc(full)}</b>",
+                "parse_mode": "HTML",
+                "reply_markup": {"inline_keyboard": [[
+                    {"text": "✅ Договорился", "callback_data": f"react:{req_id}:agree"},
+                    {"text": "❌ Отказ", "callback_data": f"react:{req_id}:decline"},
+                ], [
+                    {"text": "⏳ Ещё в работе", "callback_data": f"react:{req_id}:progress"},
+                    {"text": "📵 Не дозвонился", "callback_data": f"react:{req_id}:no_answer"},
+                ]]}
+            }
+            try:
+                res = requests.post(url, json=payload, timeout=10).json()
+                if not res.get("ok"):
+                    logging.error(f"_send_batch_cards: Telegram отклонил карточку {req_id}: {res}")
+            except Exception as e:
+                logging.error(f"_send_batch_cards error: {e}")
+            time.sleep(0.4)
+
+def start_batch_flow(chat_id, db, n):
+    """/batch [N] — спрашиваем владельца, кто сегодня в офисе (общий пул
+    уйдёт им), потом раздаём."""
+    if not BATCH_ENABLED:
+        send_message("Автораздача отключена (BATCH_ENABLED=0 в Railway).", chat_id=chat_id)
+        return
+    items = load_sleeping_items()
+    if not items:
+        send_message("Список спящих ещё не загружен. Пришли мне файл <b>sleeping_list.json</b> одним сообщением.", chat_id=chat_id)
+        return
+    queue = batch_queue(db, items)
+    if not queue:
+        send_message("Очередь пуста — всех из списка уже выдавали. 🎉", chat_id=chat_id)
+        return
+    active, on_vac = batch_active_contacts(db)
+    if not active:
+        send_message("Ни один торговый не зарегистрирован в боте (нужен /start у каждого).", chat_id=chat_id)
+        return
+    code_map = db.setdefault("tp_name_codes", {})
+    for name in active:
+        code_map[tp_name_code(name)] = name
+    db["admin_state"] = {"action": "batch_office", "n": n, "office": []}
+    save_db(db)
+    send_message(
+        f"📋 Раздаём <b>{n}</b> (в очереди {len(queue)}).\n\n"
+        f"Кто сегодня в офисе? Им поровну уйдёт общий пул. "
+        f"Партнёры, закреплённые за торговыми, уйдут их аплайнам в любом случае. "
+        f"Если никого не выбрать — пул пропущу.",
+        chat_id=chat_id,
+        reply_markup={"inline_keyboard": batch_office_buttons(list(active.keys()), [])}
+    )
+
+def batch_office_buttons(names, chosen_codes):
+    rows = []
+    for name in names:
+        code = tp_name_code(name)
+        mark = "✅ " if code in chosen_codes else ""
+        rows.append([{"text": mark + clean_tp_name(name), "callback_data": f"batchoff:{code}"}])
+    rows.append([{"text": "▶️ Раздать", "callback_data": "batchgo"}])
+    return rows
+
+def handle_batch_office_toggle_callback(callback_query):
+    cq_id = callback_query.get("id", "")
+    user_id = (callback_query.get("from", {}) or {}).get("id", "")
+    if str(user_id) != str(OWNER_ID):
+        answer_callback_query(cq_id, "Только руководитель может это делать")
+        return
+    code = callback_query.get("data", "")[len("batchoff:"):]
+    db = load_db()
+    state = db.get("admin_state", {})
+    if state.get("action") != "batch_office":
+        answer_callback_query(cq_id, "Раздача устарела, напиши /batch заново")
+        return
+    chosen = state.setdefault("office", [])
+    if code in chosen:
+        chosen.remove(code)
+    else:
+        chosen.append(code)
+    save_db(db)
+    answer_callback_query(cq_id)
+    message = callback_query.get("message", {}) or {}
+    chat_id = (message.get("chat", {}) or {}).get("id")
+    msg_id = message.get("message_id")
+    if chat_id and msg_id:
+        active, _ = batch_active_contacts(db)
+        set_inline_keyboard(chat_id, msg_id, batch_office_buttons(list(active.keys()), chosen))
+
+def handle_batch_go_callback(callback_query):
+    cq_id = callback_query.get("id", "")
+    user_id = (callback_query.get("from", {}) or {}).get("id", "")
+    if str(user_id) != str(OWNER_ID):
+        answer_callback_query(cq_id, "Только руководитель может это делать")
+        return
+    db = load_db()
+    state = db.get("admin_state", {})
+    message = callback_query.get("message", {}) or {}
+    chat_id = (message.get("chat", {}) or {}).get("id")
+    msg_id = message.get("message_id")
+    if state.get("action") != "batch_office":
+        answer_callback_query(cq_id, "Уже раздано или устарело")
+        if chat_id and msg_id:
+            clear_inline_keyboard(chat_id, msg_id)
+        return
+    n = int(state.get("n") or BATCH_DEFAULT_SIZE)
+    code_map = db.get("tp_name_codes", {})
+    office_names = [code_map[c] for c in state.get("office", []) if c in code_map]
+    db["admin_state"] = {}  # сразу сбрасываем — повторное нажатие не раздаст второй раз
+    save_db(db)
+    answer_callback_query(cq_id, "Раздаю!")
+    if chat_id and msg_id:
+        clear_inline_keyboard(chat_id, msg_id)
+
+    queue = batch_queue(db, load_sleeping_items())
+    assigned, skipped_vac, skipped_pool, total = batch_select(db, queue, n, office_names)
+    if not total:
+        hint = ""
+        if skipped_pool and not office_names:
+            hint = " Остались только партнёры общего пула — запусти /batch и выбери, кто в офисе."
+        send_message(f"Раздавать нечего.{hint}", chat_id=user_id)
+        return
+    cards = batch_create_records(db, assigned)
+    save_db(db)
+
+    active, _ = batch_active_contacts(db)
+    chat_ids = {tp: active[tp]["id"] for tp in cards if tp in active}
+    threading.Thread(target=_send_batch_cards, args=(cards, chat_ids), daemon=True).start()
+
+    lines = [f"✅ Раздал <b>{total}</b>:"]
+    for tp, its in sorted(cards.items(), key=lambda x: -len(x[1])):
+        lines.append(f"• {clean_tp_name(tp)}: {len(its)}")
+    lines.append(f"\nОсталось в очереди: {len(queue) - total}")
+    if skipped_vac:
+        lines.append(f"Пропущено (аплайн в отпуске): {skipped_vac}")
+    if skipped_pool:
+        lines.append(f"Пул пропущен: {skipped_pool} (офис не выбран)")
+    send_message("\n".join(lines), chat_id=user_id)
+
 # ── ВСЁ ЧТО БЫЛО В ТВОЁМ ФАЙЛЕ ──────────────────────────────
 
 def set_inline_keyboard(chat_id, message_id, buttons):
@@ -2302,6 +2634,10 @@ def tg_webhook():
                     handle_reactivation_reassign_pick_callback(callback_query)
                 elif cq_data.startswith("reactreassign:"):
                     handle_reactivation_reassign_callback(callback_query)
+                elif cq_data.startswith("batchoff:"):
+                    handle_batch_office_toggle_callback(callback_query)
+                elif cq_data == "batchgo":
+                    handle_batch_go_callback(callback_query)
                 return jsonify({"ok": True})
 
             msg = data.get("message", {})
@@ -2332,6 +2668,11 @@ def tg_webhook():
                 handle_checkin_photo(msg, db)
                 return jsonify({"ok": True})
 
+            # Документ от владельца — это список спящих (sleeping_list.json)
+            if "document" in msg and str(user_id) == str(OWNER_ID):
+                handle_sleeping_upload(msg, user_id)
+                return jsonify({"ok": True})
+
             if not text or text.startswith("/"):
                 # Отвечаем на /start — сразу просим явно выбрать своё имя из списка,
                 # вместо ненадёжного угадывания по first name (тёзки, разные написания)
@@ -2349,6 +2690,13 @@ def tg_webhook():
                 elif text == "/reactivate" and str(user_id) == str(OWNER_ID):
                     db = load_db()
                     start_reactivation_flow(user_id, db)
+                elif text.split()[0].split("@")[0] == "/batch" and str(user_id) == str(OWNER_ID):
+                    db = load_db()
+                    parts = text.split()
+                    n = BATCH_DEFAULT_SIZE
+                    if len(parts) > 1 and parts[1].isdigit():
+                        n = max(1, min(int(parts[1]), 200))
+                    start_batch_flow(user_id, db, n)
                 return jsonify({"ok": True})
 
             # Владелец сейчас вводит ФИО партнёра на отработку — перехватываем
@@ -2919,6 +3267,7 @@ def setup_bot_commands():
         {"command": "start", "description": "Начать / зарегистрироваться в боте"},
         {"command": "whoami", "description": "Перерегистрироваться (выбрать себя заново)"},
         {"command": "reactivate", "description": "Отдать спящего партнёра торговому на отработку"},
+        {"command": "batch", "description": "Раздать пачку спящих партнёров торговым"},
     ]
     try:
         r = requests.post(url, json={

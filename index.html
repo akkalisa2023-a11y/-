@@ -380,8 +380,16 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
   <div class="card" style="margin-bottom:12px">
     <div class="ct"><span style="color:var(--mint)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M8 21h8M12 17v4M17 5h3a1 1 0 0 1 1 1c0 3-2 5-4 5M7 5H4a1 1 0 0 0-1 1c0 3 2 5 4 5"/><path d="M7 3h10v6a5 5 0 0 1-10 0V3z"/></svg></span>Рейтинг торговых <span id="tp-month-lbl" style="font-size:10px;color:var(--text3);text-transform:none;font-weight:400;margin-left:4px"></span></div>
     <table>
-      <thead><tr><th>#</th><th>Торговый</th><th>Акт.</th><th>Прогноз</th><th>Прогноз без фрода</th><th>Пред.</th><th>Партнёров</th><th>3+</th><th>10+</th><th>Фрод</th><th>% фрод</th><th>Тренд</th></tr></thead>
+      <thead><tr><th>#</th><th>Торговый</th><th>Акт.</th><th>Прогноз</th><th>Прогноз без фрода</th><th>Пред.</th><th>Партнёров</th><th>3м+</th><th>3+</th><th>10+</th><th>Фрод</th><th>% фрод</th><th>Тренд</th></tr></thead>
       <tbody id="tp-tbl"></tbody>
+    </table>
+  </div>
+  <div class="card" style="margin-bottom:12px">
+    <div class="ct"><span class="dot"></span>Активные 3+ месяца по торговым <span id="a3-tp-lbl" style="font-size:10px;color:var(--text3);text-transform:none;font-weight:400;margin-left:4px"></span></div>
+    <div id="a3-tp-note" style="font-size:11.5px;color:var(--text3);margin-bottom:8px;line-height:1.5"></div>
+    <table>
+      <thead><tr><th>#</th><th>Торговый</th><th>Активные 3м+</th><th>Пред. мес.</th><th>Старый «3+ продаж»</th><th>Тренд</th></tr></thead>
+      <tbody id="a3-tp-tbl"></tbody>
     </table>
   </div>
   <div class="g2">
@@ -413,11 +421,12 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
     <div class="sc" onclick="seg(this,'fraud')"><div class="sn" style="color:var(--red)">🚨</div><div class="sl">Есть фрод</div></div>
     <div class="sc" onclick="seg(this,'grow')"><div class="sn" style="color:var(--mint)">↑</div><div class="sl">Растут</div></div>
     <div class="sc" onclick="seg(this,'drop')"><div class="sn" style="color:var(--red)">↓</div><div class="sl">Упали</div></div>
+    <div class="sc" onclick="seg(this,'a3')" title="Активен в этом и в прошлом месяце (без фрода)"><div class="sn" id="s-a3" style="color:var(--mint)">—</div><div class="sl">Активные 3м+</div></div>
   </div>
   <div class="card">
     <div class="ct"><span style="color:var(--mint)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>Партнёры (Ритейл) <span id="pr-month-lbl" style="font-size:10px;color:var(--text3);text-transform:none;font-weight:400;margin-left:4px"></span></div>
     <table>
-      <thead><tr><th>#</th><th>Партнёр</th><th>Торговый</th><th>Тек.</th><th>Прогноз</th><th>Пред.</th><th>Фрод</th><th>% фрод</th><th>Тренд</th><th>Сегмент</th></tr></thead>
+      <thead><tr><th>#</th><th>Партнёр</th><th>Торговый</th><th>Тек.</th><th>Прогноз</th><th>Пред.</th><th>Фрод</th><th>% фрод</th><th>Тренд</th><th>Сегмент</th><th>Акт. 3м+</th></tr></thead>
       <tbody id="pr-tbl"></tbody>
     </table>
   </div>
@@ -463,7 +472,7 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
     <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Как считается рейтинг эффективности</div>
     <div style="font-size:12px;color:var(--text2);line-height:1.7">
       <span style="color:var(--mint)">+</span> Активации (вес 40%) &nbsp;·&nbsp;
-      <span style="color:var(--mint)">+</span> Партнёры 3+ продаж (вес 25%) &nbsp;·&nbsp;
+      <span style="color:var(--mint)">+</span> Активные партнёры 3м+ (вес 25%) &nbsp;·&nbsp;
       <span style="color:var(--mint)">+</span> Привлечение уникальных (вес 20%) &nbsp;·&nbsp;
       <span style="color:var(--red)">−</span> Фрод % (штраф ×2) (вес 15%)
     </div>
@@ -918,17 +927,145 @@ function selectMonth(m){
 function render(){
   const d=DB.months[cur], pv=prevM(cur), dp=pv?DB.months[pv]:null;
   renderKPI(d,dp,pv);
+  renderActive3(d);
   renderTopTP(d.tp.slice(0,6));
   renderFraudTP(d.tp);
   renderOps(d.ops);
   renderMainChart();
   renderTPTab(d,dp,pv);
   prAllCache=buildPRAll(d.partners, dp?dp.partners:[], d.last_date);
+  markA3(prAllCache);
   renderPRSegs();
   renderPRTable(prAllCache,'all');
   currentPRFilter='all';
   document.querySelectorAll('.sc').forEach((e,i)=>{e.classList.toggle('on',i===0);});
   document.getElementById('pr-month-lbl').textContent=fmtM(cur)+(pv?` · vs ${fmtM(pv)}`:'');
+}
+
+// ─── АКТИВНЫЕ 3+ МЕСЯЦА (новый KPI, добавлен рядом со старым «3+ продаж») ───
+// Партнёр засчитан в месяце M, если у него есть хотя бы 1 активация (без фрода)
+// и в M, и в предыдущем месяце. Это покрывает и «3 месяца подряд», и новых /
+// ожививших (2 месяца подряд — авансом). Считаем только с июля 2026.
+const A3_START = '2026-07';
+let A3_RT = {}, A3_CUR = null;
+
+function calPrevKey(m){
+  const [y,mo] = m.split('-').map(Number);
+  const d = new Date(y, mo-2, 1);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+}
+function a3RtMap(){
+  // имя партнёра -> RT-код (RT надёжнее имени; в старых месяцах RT мог не сохраниться)
+  const map = {};
+  Object.values(DB.months||{}).forEach(mo=>{
+    (mo.partners||[]).forEach(p=>{
+      const rt = String(p.rt||'').trim().toUpperCase();
+      if(rt) map[normName(p.r)] = rt;
+    });
+  });
+  return map;
+}
+function a3Key(p, rtMap){
+  const rt = String(p.rt||'').trim().toUpperCase();
+  if(rt) return rt;
+  const n = normName(p.r);
+  return rtMap[n] || ('n:'+n);
+}
+function a3MonthMap(m, rtMap){
+  const res = new Map();
+  ((DB.months[m]||{}).partners||[]).forEach(p=>{
+    const nf = (p.acts||0) - (p.fraud||0);
+    if(nf <= 0) return;
+    const k = a3Key(p, rtMap);
+    let e = res.get(k);
+    if(!e){ e = {acts:0, tp:{}}; res.set(k, e); }
+    e.acts += nf;
+    e.tp[p.t] = (e.tp[p.t]||0) + nf;
+  });
+  return res;
+}
+function a3Compute(m, rtMap){
+  const pk = calPrevKey(m);
+  if(m < A3_START || pk < A3_START || !DB.months[m] || !DB.months[pk]) return null;
+  const cur = a3MonthMap(m, rtMap), prev = a3MonthMap(pk, rtMap);
+  const keys = new Set(), byTp = {};
+  cur.forEach((e,k)=>{
+    if(prev.has(k)){
+      keys.add(k);
+      const tp = Object.keys(e.tp).sort((a,b)=>e.tp[b]-e.tp[a])[0];
+      byTp[tp] = (byTp[tp]||0) + 1;
+    }
+  });
+  return {keys, byTp, total: keys.size, active: cur.size};
+}
+function a3IsOpenMonth(m){
+  const n = moscowNow();
+  return m === `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`;
+}
+function renderActive3(d){
+  A3_RT = a3RtMap();
+  A3_CUR = a3Compute(cur, A3_RT);
+  const pk = calPrevKey(cur);
+  const prevRes = a3Compute(pk, A3_RT);
+  const open = a3IsOpenMonth(cur);
+
+  // карточка на «Сводке»
+  const kp = document.getElementById('kpi-sv');
+  if(kp){
+    const val = A3_CUR ? A3_CUR.total.toLocaleString('ru') : '—';
+    let sub = '&nbsp;';
+    if(!A3_CUR) sub = 'считаем с июля 2026, нужен предыдущий месяц';
+    else if(prevRes){
+      const diff = A3_CUR.total - prevRes.total;
+      sub = `<span class="${diff>=0?'up':'dn'}">${diff>=0?'↑':'↓'}${Math.abs(diff)}</span> vs ${prevRes.total} в ${fmtM(pk)}`;
+    } else sub = `активных в месяце: ${A3_CUR.active}`;
+    if(open && A3_CUR) sub += '<br>месяц не закончен — цифра растёт';
+    const a3Html = `<div class="kc hero" title="Партнёр активен в этом и в прошлом месяце (без фрода). Новые и ожившие, у кого 2 месяца подряд, считаются авансом."><div class="kl">Активных партнёров 3м+</div><div class="kv" style="color:var(--mint)">${val}</div><div class="ks">${sub}</div></div>`;
+    // ставим сразу после карточки «Активных партнёров»; если не нашли — в конец
+    const anchor = Array.from(kp.children).find(c=>{const l=c.querySelector('.kl');return l && l.textContent.trim()==='Активных партнёров';});
+    if(anchor) anchor.insertAdjacentHTML('afterend', a3Html);
+    else kp.insertAdjacentHTML('beforeend', a3Html);
+  }
+
+  // таблица на «Торговых»
+  const tbl = document.getElementById('a3-tp-tbl');
+  if(!tbl) return;
+  document.getElementById('a3-tp-lbl').textContent = fmtM(cur);
+  const note = document.getElementById('a3-tp-note');
+  if(!A3_CUR){
+    note.textContent = 'Считаем с июля 2026: для выбранного месяца нет данных за предыдущий месяц.';
+    tbl.innerHTML = '';
+    return;
+  }
+  note.innerHTML = 'Партнёр засчитывается, если продавал и в этом, и в прошлом месяце (фрод не считаем). Новые и ожившие с 2 месяцами подряд — тоже в зачёте.'
+    + (open ? ' <b style="color:var(--amber)">Месяц не закончен — цифры будут расти.</b>' : '');
+  const names = new Set([...d.tp.map(t=>t.name), ...Object.keys(A3_CUR.byTp)]);
+  const oldMap = {}; d.tp.forEach(t=>oldMap[t.name]=t.p3);
+  const rows = [...names].map(n=>({n, v:A3_CUR.byTp[n]||0, pv:prevRes?(prevRes.byTp[n]||0):null, old:oldMap[n]??0}))
+    .filter(r=>r.v>0||r.old>0).sort((a,b)=>b.v-a.v);
+  const tot = rows.reduce((s,r)=>s+r.v,0);
+  tbl.innerHTML = rows.map((r,i)=>{
+    const diff = r.pv===null ? null : r.v - r.pv;
+    const tr = diff===null?'—':diff>0?`<span class="up">↑${diff}</span>`:diff<0?`<span class="dn">↓${Math.abs(diff)}</span>`:'=';
+    const rn = i===0?'g1':i===1?'s1':i===2?'b1':'';
+    return `<tr class="tr-anim" style="animation-delay:${i*0.03}s">
+      <td><span class="rn ${rn}">${i+1}</span></td>
+      <td style="color:var(--text);font-weight:500">${escHtml(r.n)}</td>
+      <td><b style="color:var(--mint)">${r.v}</b></td>
+      <td style="color:var(--text3)">${r.pv===null?'—':r.pv}</td>
+      <td style="color:var(--text2)">${r.old}</td>
+      <td>${tr}</td></tr>`;
+  }).join('') + `<tr><td></td><td style="color:var(--text);font-weight:600">Итого</td><td><b style="color:var(--mint)">${tot}</b></td><td style="color:var(--text3)">${prevRes?Object.values(prevRes.byTp).reduce((a,b)=>a+b,0):'—'}</td><td></td><td></td></tr>`;
+}
+function markA3(list){
+  list.forEach(p=>{ p.a3 = A3_CUR ? A3_CUR.keys.has(a3Key(p, A3_RT)) : null; });
+  const el = document.getElementById('s-a3');
+  if(el) el.textContent = A3_CUR ? A3_CUR.total : '—';
+}
+
+function effP3(t){
+  // для рейтинга эффективности: активные 3м+; если для месяца их не посчитать (до августа) — старый «3+ продаж»
+  return A3_CUR ? (A3_CUR.byTp[t.name]||0) : t.p3;
 }
 
 function renderKPI(d,dp,pv){
@@ -1115,6 +1252,7 @@ function renderTPTab(d,dp,pv){
       <td style="color:var(--text2)" title="Прогноз без учёта фрод-активаций">📈 ${fcNoFraud}</td>
       <td style="color:var(--text3)">${pa!==undefined?pa:'—'}</td>
       <td>${t.partners}</td>
+      <td title="Активные 3м+: продавал в этом и прошлом месяце (без фрода)"><b style="color:var(--mint)">${A3_CUR?(A3_CUR.byTp[t.name]||0):'—'}</b></td>
       <td><span class="bdg bg2">${t.p3}</span></td>
       <td><span class="bdg ${t.p10>0?'ba2':'bb2'}">${t.p10}</span></td>
       <td class="fraud-val">${t.fraud||0}</td>
@@ -1253,6 +1391,7 @@ function renderPRTable(all,filter){
   if(filter==='fraud') data=all.filter(p=>p.fraud>0).sort((a,b)=>b.fraud-a.fraud);
   if(filter==='grow') data=all.filter(p=>p.forecast>p.prev&&p.prev>0);
   if(filter==='drop') data=all.filter(p=>p.forecast<p.prev&&p.prev>0);
+  if(filter==='a3') data=all.filter(p=>p.a3);
   document.getElementById('pr-tbl').innerHTML=data.map((p,i)=>{
     const tr=p.forecast>p.prev?`<span class="up">↑${p.forecast-p.prev}</span>`:p.forecast<p.prev?`<span class="dn">↓${p.prev-p.forecast}</span>`:'—';
     const seg=p.acts>=10?'<span class="bdg ba2">10+</span>':p.acts>=3?'<span class="bdg bg2">3+</span>':'<span class="bdg bb2">1+</span>';
@@ -1268,6 +1407,7 @@ function renderPRTable(all,filter){
       <td>${p.fraud>0?`<span class="bdg ${p.fraud_pct>30?'br2':p.fraud_pct>10?'ba2':'bg2'}">${p.fraud_pct}%</span>`:'—'}</td>
       <td>${tr}</td>
       <td>${seg}</td>
+      <td>${p.a3===null||p.a3===undefined?'—':p.a3?'<span class="bdg bg2">✓</span>':''}</td>
     </tr>`;
   }).join('');
 }
@@ -1344,7 +1484,7 @@ function calcEfficiency(){
   privlList.forEach(p=>privlMap[p.n]=p);
 
   const maxActs=Math.max(...d.tp.map(t=>t.acts),1);
-  const maxP3=Math.max(...d.tp.map(t=>t.p3),1);
+  const maxP3=Math.max(...d.tp.map(effP3),1);
   const maxPrivl=Math.max(...d.tp.map(t=>{
     const pm=privlMap[t.name]; return pm?pm.u:0;
   }),1);
@@ -1352,7 +1492,7 @@ function calcEfficiency(){
   return d.tp.map(t=>{
     const pm=privlMap[t.name];
     const actScore=(t.acts/maxActs)*40;
-    const p3Score=(t.p3/maxP3)*25;
+    const p3Score=(effP3(t)/maxP3)*25;
     const privlScore=pm?(pm.u/maxPrivl)*20:0;
     const fraudPenalty=(t.fraud_pct||0)*0.3; // штраф
     const score=Math.max(0, Math.round(actScore+p3Score+privlScore-fraudPenalty));
@@ -1383,6 +1523,7 @@ function renderEfficiency(){
           <span class="eff-stat">⚡ ${t.acts} акт.</span>
           <span class="eff-stat">👥 ${t.partners} партнёров</span>
           <span class="eff-stat">3+ = ${t.p3}</span>
+          ${A3_CUR?`<span class="eff-stat">3м+ = ${effP3(t)}</span>`:''}
           <span class="eff-stat">10+ = ${t.p10}</span>
           ${t.uniq>0?`<span class="eff-stat">🆕 ${t.uniq} уник.</span>`:''}
           ${t.fraud>0?`<span class="eff-stat" style="color:var(--red)">🚨 ${t.fraud} фрод</span>`:''}
@@ -2083,12 +2224,12 @@ function calcEfficiencyData() {
   const privlMap = {};
   (DB.privl||[]).forEach(p => privlMap[p.n] = p);
   const maxActs = Math.max(...d.tp.map(t=>t.acts), 1);
-  const maxP3   = Math.max(...d.tp.map(t=>t.p3), 1);
+  const maxP3   = Math.max(...d.tp.map(effP3), 1);
   const maxPrivl = Math.max(...d.tp.map(t=>{const pm=privlMap[t.name];return pm?pm.u:0;}), 1);
   return d.tp.map(t => {
     const pm = privlMap[t.name];
     const score = Math.max(0, Math.round(
-      (t.acts/maxActs)*40 + (t.p3/maxP3)*25 +
+      (t.acts/maxActs)*40 + (effP3(t)/maxP3)*25 +
       (pm?(pm.u/maxPrivl)*20:0) - (t.fraud_pct||0)*0.3
     ));
     const grade = score>=75?'S':score>=50?'A':score>=30?'B':'C';

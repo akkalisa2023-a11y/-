@@ -2450,13 +2450,54 @@ def build_public_praise(tp_list, has_bad=False, last_date=None, days_in_month=No
         return f"\n━━━━━━━━━━━━━━━━━━━━\n💚 <b>НО ЕСТЬ И ХОРОШИЕ НОВОСТИ!</b>\n\n{praise}\nФёдор гордится! 💪"
 
 
-def calc_efficiency(d, privl):
+A3_START = "2026-07"
+
+def a3_by_tp(db, month_key):
+    """Активные партнёры 3м+ по торговым: партнёр продавал (без фрода) и в этом,
+    и в предыдущем месяце. Считаем только с июля 2026 — иначе None
+    (тогда рейтинг использует старый показатель «3+ продаж»).
+    Тот же расчёт, что в дашборде."""
+    months = db.get("months", {})
+    y, mo = (int(x) for x in month_key.split("-"))
+    pk = f"{y-1}-12" if mo == 1 else f"{y}-{mo-1:02d}"
+    if month_key < A3_START or pk < A3_START or month_key not in months or pk not in months:
+        return None
+    rt_map = {}
+    for m in months.values():
+        for p in m.get("partners", []):
+            rt = (p.get("rt") or "").strip().upper()
+            if rt:
+                rt_map[norm_name(p.get("r", ""))] = rt
+
+    def month_map(mk):
+        res = {}
+        for p in months[mk].get("partners", []):
+            nf = (p.get("acts", 0) or 0) - (p.get("fraud", 0) or 0)
+            if nf <= 0:
+                continue
+            rt = (p.get("rt") or "").strip().upper()
+            key = rt or rt_map.get(norm_name(p.get("r", ""))) or ("n:" + norm_name(p.get("r", "")))
+            e = res.setdefault(key, {})
+            e[p.get("t")] = e.get(p.get("t"), 0) + nf
+        return res
+
+    cur, prev = month_map(month_key), month_map(pk)
+    by_tp = {}
+    for key, tps in cur.items():
+        if key in prev:
+            tp = max(tps, key=lambda k: tps[k])
+            by_tp[tp] = by_tp.get(tp, 0) + 1
+    return by_tp
+
+def calc_efficiency(d, privl, a3=None):
     privl_map  = {p["n"]: p for p in privl}
     tp_list    = d.get("tp", [])
     if not tp_list:
         return []
     max_acts   = max((t["acts"] for t in tp_list), default=1)
-    max_p3     = max((t["p3"]   for t in tp_list), default=1)
+    p3_of      = (lambda t: a3.get(t["name"], 0)) if a3 is not None else (lambda t: t["p3"])
+    max_p3     = max((p3_of(t) for t in tp_list), default=1)
+    max_p3     = max(max_p3, 1)
     max_privl  = max((privl_map.get(t["name"], {}).get("u", 0) for t in tp_list), default=1)
     max_privl  = max(max_privl, 1)  # защита от деления на ноль
     result = []
@@ -2464,7 +2505,7 @@ def calc_efficiency(d, privl):
         pm    = privl_map.get(t["name"], {})
         score = max(0, round(
             (t["acts"]/max_acts)*40 +
-            (t["p3"]/max_p3)*25 +
+            (p3_of(t)/max_p3)*25 +
             (pm.get("u", 0)/max_privl)*20 -
             (t.get("fraud_pct", 0))*0.3
         ))
@@ -3215,7 +3256,7 @@ def send_report():
             # Нет помесячных данных за этот месяц — старый формат/фолбэк
             return db.get("privl", [])
 
-        eff = calc_efficiency(months[cur_key], privl_for_month(cur_key))
+        eff = calc_efficiency(months[cur_key], privl_for_month(cur_key), a3=a3_by_tp(db, cur_key))
 
         data = {
             "current":    months[cur_key],

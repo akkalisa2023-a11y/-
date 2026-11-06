@@ -2,6 +2,7 @@ import os, json, logging, random, calendar, re
 from zoneinfo import ZoneInfo
 import uuid
 import fcntl
+import time, threading
 
 # Railway крутится в UTC, а вся команда — по Москве. Чтобы метки времени
 # в базе (чек-ины, разборы, отчёты) не съезжали на 3 часа, везде вместо
@@ -827,12 +828,12 @@ def handle_reactivation_tp_response_callback(callback_query):
         answer_callback_query(cq_id, "Принято, попробуй ещё раз позже")
         save_db(db)
         if msg_chat_id and msg_id:
-            set_inline_keyboard(msg_chat_id, msg_id, [[
+            set_inline_keyboard(msg_chat_id, msg_id, _with_territory(req_id, req, [[
                 {"text": "✅ Договорился", "callback_data": f"react:{req_id}:agree"},
                 {"text": "❌ Отказ", "callback_data": f"react:{req_id}:decline"},
             ], [
                 {"text": "⏳ Ещё в работе", "callback_data": f"react:{req_id}:progress"},
-            ]])
+            ]]))
         send_message(f"📵 <b>{tp_display}</b> → {partner}: не дозвонился, пробует ещё.", chat_id=OWNER_ID)
     else:  # progress
         req["status"] = "in_progress"
@@ -841,10 +842,10 @@ def handle_reactivation_tp_response_callback(callback_query):
         answer_callback_query(cq_id, "Принято, жду обновления")
         save_db(db)
         if msg_chat_id and msg_id:
-            set_inline_keyboard(msg_chat_id, msg_id, [[
+            set_inline_keyboard(msg_chat_id, msg_id, _with_territory(req_id, req, [[
                 {"text": "✅ Договорился", "callback_data": f"react:{req_id}:agree"},
                 {"text": "❌ Отказ", "callback_data": f"react:{req_id}:decline"},
-            ]])
+            ]]))
         send_message(f"⏳ <b>{tp_display}</b> → {partner}: ещё в работе.", chat_id=OWNER_ID)
 
 def handle_reactivation_reassign_callback(callback_query):
@@ -1413,6 +1414,481 @@ def check_missed_checkins():
             save_db(db)
     except Exception as e:
         logging.error(f"check_missed_checkins error: {e}")
+
+# ── АВТОРАЗДАЧА СПЯЩИХ ПАРТНЁРОВ (/batch) ─────────────────────
+# Временная функция. Выключается переменной BATCH_ENABLED=0 в Railway —
+# тогда /batch и заливка списка перестают работать, всё остальное (в т.ч.
+# уже выданные партнёры, статусы, напоминания) продолжает жить как раньше.
+# Список спящих (с телефонами) лежит в ОТДЕЛЬНОМ файле на Volume — его можно
+# удалить, ничего не ломая. На GitHub этот файл заливать нельзя (репозиторий
+# публичный): владелец присылает его боту в Telegram.
+
+BATCH_ENABLED = os.environ.get("BATCH_ENABLED", "1") != "0"
+BATCH_DEFAULT_SIZE = int(os.environ.get("BATCH_SIZE", "50"))
+SLEEPING_FILE = DATA_DIR / "sleeping_list.json"
+
+def load_sleeping_items():
+    try:
+        if SLEEPING_FILE.exists():
+            data = json.loads(SLEEPING_FILE.read_text())
+            return data.get("items", []) if isinstance(data, dict) else []
+    except Exception as e:
+        logging.error(f"load_sleeping_items error: {e}")
+    return []
+
+def handle_sleeping_upload(msg, user_id):
+    """Владелец прислал боту файл sleeping_list.json — заменяем очередь спящих.
+    Уже выданные партнёры не потеряются и не задвоятся: при раздаче бот
+    пропускает тех, у кого RT-код уже есть в реактивации."""
+    if not BATCH_ENABLED:
+        send_message("Автораздача отключена (BATCH_ENABLED=0 в Railway).", chat_id=user_id)
+        return
+    doc = msg.get("document", {}) or {}
+    name = (doc.get("file_name") or "").lower()
+    if not name.endswith(".json"):
+        send_message("Жду файл <b>sleeping_list.json</b> — этот не подходит.", chat_id=user_id)
+        return
+    if doc.get("file_size", 0) > 15_000_000:
+        send_message("Файл слишком большой (лимит 15 МБ).", chat_id=user_id)
+        return
+    try:
+        info = requests.get(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/getFile",
+            params={"file_id": doc["file_id"]}, timeout=15
+        ).json()
+        if not info.get("ok"):
+            send_message("Не смог получить файл от Telegram, пришли ещё раз.", chat_id=user_id)
+            return
+        raw = requests.get(
+            f"https://api.telegram.org/file/bot{BOT_TOKEN}/{info['result']['file_path']}", timeout=60
+        ).content
+        data = json.loads(raw.decode("utf-8"))
+        items = data.get("items") if isinstance(data, dict) else None
+        if not isinstance(items, list) or not items:
+            send_message("В файле нет списка партнёров — проверь, что это sleeping_list.json.", chat_id=user_id)
+            return
+        clean = []
+        for it in items:
+            if isinstance(it, dict) and it.get("r") and it.get("n"):
+                it["r"] = str(it["r"]).strip().upper()
+                clean.append(it)
+        if not clean:
+            send_message("Не нашёл ни одного партнёра с RT-кодом и ФИО.", chat_id=user_id)
+            return
+        SLEEPING_FILE.write_text(json.dumps({"uploaded_at": now_msk().isoformat(), "items": clean}, ensure_ascii=False))
+        db = load_db()
+        queue = batch_queue(db, clean)
+        no_phone = sum(1 for it in clean if not it.get("ph"))
+        note = f"\n⚠️ Без телефона: {no_phone}." if no_phone else ""
+        send_message(
+            f"✅ Список загружен: {len(clean)} партнёров, из них ещё не выдано {len(queue)}.{note}\n"
+            f"Раздать на сегодня: /batch (или /batch 30 — другое количество).",
+            chat_id=user_id
+        )
+    except Exception as e:
+        logging.error(f"handle_sleeping_upload error: {e}")
+        send_message("Не получилось разобрать файл. Пришли sleeping_list.json ещё раз.", chat_id=user_id)
+
+def batch_queue(db, items):
+    """Очередь: все, кого ещё не выдавали (по RT-коду, любой статус в
+    реактивации), по приоритету от большего к меньшему."""
+    used = {str(r.get("rt_code", "")).strip().upper() for r in db.get("reactivation", {}).values() if r.get("rt_code")}
+    queue = [it for it in items if it["r"] not in used]
+    queue.sort(key=lambda x: -(x.get("p") or 0))
+    return queue
+
+def _surname(name):
+    parts = clean_tp_name(name or "").split()
+    return parts[0].lower() if parts else ""
+
+def batch_active_contacts(db):
+    """Зарегистрированные в боте торговые, кроме уволенных. Второй список —
+    те из них, кто сейчас в отпуске (им ничего не выдаём)."""
+    inactive = set(db.get("inactive_tp", []))
+    active, on_vac = {}, {}
+    for name, c in db.get("tp_contacts", {}).items():
+        if not c.get("id") or name in inactive:
+            continue
+        (on_vac if is_on_vacation(db, name) else active)[name] = c
+    return active, on_vac
+
+def batch_select(db, queue, n, office_names):
+    """Раздаём первых n из очереди — ТОЛЬКО тем, кто сегодня в офисе
+    (в полях обзванивать некогда, им ничего не шлём).
+    • Подканал МСК и аплайн = действующий торговый (по фамилии) → ему лично,
+      но только если он сегодня в офисе. Если не в офисе или в отпуске —
+      партнёр остаётся в очереди до следующего раза.
+    • Всё остальное (Дилерский, Маркетинг, Сим-мастер, МСК с уволенным
+      аплайном) → общий пул, поровну между теми, кто сегодня в офисе."""
+    active, on_vac = batch_active_contacts(db)
+    by_surname = {_surname(nm): nm for nm in active if _surname(nm)}
+    vac_surnames = {_surname(nm) for nm in on_vac if _surname(nm)}
+    office = [nm for nm in office_names if nm in active]
+
+    assigned, rr, total = {}, 0, 0
+    skipped_vac = skipped_away = 0
+    for it in queue:
+        if total >= n:
+            break
+        tp = None
+        if "МСК" in (it.get("s") or ""):
+            sn = _surname(it.get("u"))
+            if sn in by_surname:
+                if by_surname[sn] in office:
+                    tp = by_surname[sn]
+                else:
+                    skipped_away += 1  # его торговый сегодня не в офисе — ждёт в очереди
+                    continue
+            elif sn in vac_surnames:
+                skipped_vac += 1
+                continue
+        if tp is None:
+            if not office:
+                break
+            tp = office[rr % len(office)]
+            rr += 1
+        assigned.setdefault(tp, []).append(it)
+        total += 1
+    return assigned, skipped_vac, skipped_away, total
+
+def batch_card_text(it):
+    """Карточка в том же виде, как владелец вставляет вручную:
+    ФИО / телефон / RT, ниже — подробности."""
+    ph = it.get("ph") or ""
+    lines = [it["n"], f"{ph} / {it['r']}" if ph else it["r"]]
+    details = []
+    if it.get("o"):
+        details.append(f"Оператор: {it['o']}")
+    if it.get("d"):
+        details.append(f"последняя активация {it['d']}")
+    if details:
+        lines.append(" · ".join(details))
+    extra = []
+    if it.get("t"):
+        extra.append(f"раньше ~{round(float(it['t']))} акт./мес")
+    if it.get("k"):
+        extra.append(f"ср. чек {it['k']} ₽")
+    if extra:
+        lines.append(" · ".join(extra))
+    return "\n".join(lines)
+
+def _with_territory(req_id, req, rows):
+    """Для партнёров из авторазадачи добавляем кнопку «Не моя территория»."""
+    if req.get("source") == "batch":
+        rows = list(rows) + [[{"text": "↩️ Не моя территория", "callback_data": f"reactterr:{req_id}"}]]
+    return rows
+
+def batch_card_markup(req_id, req):
+    return {"inline_keyboard": _with_territory(req_id, req, [[
+        {"text": "✅ Договорился", "callback_data": f"react:{req_id}:agree"},
+        {"text": "❌ Отказ", "callback_data": f"react:{req_id}:decline"},
+    ], [
+        {"text": "⏳ Ещё в работе", "callback_data": f"react:{req_id}:progress"},
+        {"text": "📵 Не дозвонился", "callback_data": f"react:{req_id}:no_answer"},
+    ]])}
+
+def batch_create_records(db, assigned):
+    """Создаём записи реактивации — такие же, как при ручной выдаче через
+    /reactivate, поэтому кнопки, напоминания, «Закрепить» и вкладка
+    «Реактивация» в дашборде работают без изменений."""
+    now_iso = now_msk().isoformat()
+    react = db.setdefault("reactivation", {})
+    cards = {}  # {tp_name: [(req_id, full_text), ...]}
+    for tp, its in assigned.items():
+        for it in its:
+            req_id = uuid.uuid4().hex[:10]
+            full = batch_card_text(it)
+            react[req_id] = {
+                "partner": it["n"],
+                "partner_full": full,
+                "phone": "".join(ch for ch in (it.get("ph") or "") if ch.isdigit()),
+                "rt_code": it["r"],
+                "tp": tp,
+                "status": "pending_tp",
+                "assigned_at": now_iso,
+                "closed_at": None,
+                "revived": False,
+                "notified_status": "none",
+                "last_touched_at": now_iso,
+                "reminded": False,
+                "source": "batch",
+                "held_by": [tp],
+            }
+            cards.setdefault(tp, []).append((req_id, full, dict(react[req_id])))
+    return cards
+
+def _send_batch_cards(cards, chat_ids):
+    """Шлём карточки в отдельном потоке и с паузами — 50 сообщений подряд
+    упираются в лимиты Telegram, а вебхук не должен висеть десятки секунд."""
+    from html import escape as _esc
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    for tp, items in cards.items():
+        chat_id = chat_ids.get(tp)
+        if not chat_id:
+            continue
+        try:
+            send_message(
+                f"📋 Валера раздаёт обзвон: сегодня тебе <b>{len(items)}</b> партнёров. "
+                f"Карточки ниже — отмечай результат кнопками. "
+                f"Если партнёр не с твоей территории — кнопка «Не моя территория», передашь коллеге.",
+                chat_id=chat_id
+            )
+        except Exception as e:
+            logging.error(f"_send_batch_cards header error: {e}")
+        for req_id, full, req in items:
+            payload = {
+                "chat_id": chat_id,
+                "text": f"🎯 На отработку:\n<b>{_esc(full)}</b>",
+                "parse_mode": "HTML",
+                "reply_markup": batch_card_markup(req_id, req),
+            }
+            try:
+                res = requests.post(url, json=payload, timeout=10).json()
+                if not res.get("ok"):
+                    logging.error(f"_send_batch_cards: Telegram отклонил карточку {req_id}: {res}")
+            except Exception as e:
+                logging.error(f"_send_batch_cards error: {e}")
+            time.sleep(0.4)
+
+def start_batch_flow(chat_id, db, n):
+    """/batch [N] — спрашиваем владельца, кто сегодня в офисе (общий пул
+    уйдёт им), потом раздаём."""
+    if not BATCH_ENABLED:
+        send_message("Автораздача отключена (BATCH_ENABLED=0 в Railway).", chat_id=chat_id)
+        return
+    items = load_sleeping_items()
+    if not items:
+        send_message("Список спящих ещё не загружен. Пришли мне файл <b>sleeping_list.json</b> одним сообщением.", chat_id=chat_id)
+        return
+    queue = batch_queue(db, items)
+    if not queue:
+        send_message("Очередь пуста — всех из списка уже выдавали. 🎉", chat_id=chat_id)
+        return
+    active, on_vac = batch_active_contacts(db)
+    if not active:
+        send_message("Ни один торговый не зарегистрирован в боте (нужен /start у каждого).", chat_id=chat_id)
+        return
+    code_map = db.setdefault("tp_name_codes", {})
+    for name in active:
+        code_map[tp_name_code(name)] = name
+    db["admin_state"] = {"action": "batch_office", "n": n, "office": []}
+    save_db(db)
+    send_message(
+        f"📋 Раздаём <b>{n}</b> (в очереди {len(queue)}).\n\n"
+        f"Кто сегодня в офисе? Карточки уйдут только им: поровну общий пул, "
+        f"а «свои» партнёры — их аплайнам, если те в офисе. "
+        f"Кто в полях — тому ничего не шлю, его партнёры подождут в очереди.",
+        chat_id=chat_id,
+        reply_markup={"inline_keyboard": batch_office_buttons(list(active.keys()), [])}
+    )
+
+def batch_office_buttons(names, chosen_codes):
+    rows = []
+    for name in names:
+        code = tp_name_code(name)
+        mark = "✅ " if code in chosen_codes else ""
+        rows.append([{"text": mark + clean_tp_name(name), "callback_data": f"batchoff:{code}"}])
+    rows.append([{"text": "▶️ Раздать", "callback_data": "batchgo"}])
+    return rows
+
+def handle_batch_office_toggle_callback(callback_query):
+    cq_id = callback_query.get("id", "")
+    user_id = (callback_query.get("from", {}) or {}).get("id", "")
+    if str(user_id) != str(OWNER_ID):
+        answer_callback_query(cq_id, "Только руководитель может это делать")
+        return
+    code = callback_query.get("data", "")[len("batchoff:"):]
+    db = load_db()
+    state = db.get("admin_state", {})
+    if state.get("action") != "batch_office":
+        answer_callback_query(cq_id, "Раздача устарела, напиши /batch заново")
+        return
+    chosen = state.setdefault("office", [])
+    if code in chosen:
+        chosen.remove(code)
+    else:
+        chosen.append(code)
+    save_db(db)
+    answer_callback_query(cq_id)
+    message = callback_query.get("message", {}) or {}
+    chat_id = (message.get("chat", {}) or {}).get("id")
+    msg_id = message.get("message_id")
+    if chat_id and msg_id:
+        active, _ = batch_active_contacts(db)
+        set_inline_keyboard(chat_id, msg_id, batch_office_buttons(list(active.keys()), chosen))
+
+def handle_batch_go_callback(callback_query):
+    cq_id = callback_query.get("id", "")
+    user_id = (callback_query.get("from", {}) or {}).get("id", "")
+    if str(user_id) != str(OWNER_ID):
+        answer_callback_query(cq_id, "Только руководитель может это делать")
+        return
+    db = load_db()
+    state = db.get("admin_state", {})
+    message = callback_query.get("message", {}) or {}
+    chat_id = (message.get("chat", {}) or {}).get("id")
+    msg_id = message.get("message_id")
+    if state.get("action") != "batch_office":
+        answer_callback_query(cq_id, "Уже раздано или устарело")
+        if chat_id and msg_id:
+            clear_inline_keyboard(chat_id, msg_id)
+        return
+    n = int(state.get("n") or BATCH_DEFAULT_SIZE)
+    code_map = db.get("tp_name_codes", {})
+    office_names = [code_map[c] for c in state.get("office", []) if c in code_map]
+    if not office_names:
+        answer_callback_query(cq_id, "Отметь хотя бы одного, кто в офисе")
+        return  # состояние не сбрасываем — можно выбрать и нажать «Раздать» ещё раз
+    db["admin_state"] = {}  # сразу сбрасываем — повторное нажатие не раздаст второй раз
+    save_db(db)
+    answer_callback_query(cq_id, "Раздаю!")
+    if chat_id and msg_id:
+        clear_inline_keyboard(chat_id, msg_id)
+
+    queue = batch_queue(db, load_sleeping_items())
+    assigned, skipped_vac, skipped_away, total = batch_select(db, queue, n, office_names)
+    if not total:
+        send_message("Раздавать нечего: для тех, кто в офисе, подходящих партнёров не нашлось.", chat_id=user_id)
+        return
+    cards = batch_create_records(db, assigned)
+    save_db(db)
+
+    active, _ = batch_active_contacts(db)
+    chat_ids = {tp: active[tp]["id"] for tp in cards if tp in active}
+    threading.Thread(target=_send_batch_cards, args=(cards, chat_ids), daemon=True).start()
+
+    lines = [f"✅ Раздал <b>{total}</b>:"]
+    for tp, its in sorted(cards.items(), key=lambda x: -len(x[1])):
+        lines.append(f"• {clean_tp_name(tp)}: {len(its)}")
+    lines.append(f"\nОсталось в очереди: {len(queue) - total}")
+    if skipped_vac:
+        lines.append(f"Пропущено (аплайн в отпуске): {skipped_vac}")
+    if skipped_away:
+        lines.append(f"Пропущено (аплайн сегодня не в офисе): {skipped_away}, они ждут в очереди")
+    send_message("\n".join(lines), chat_id=user_id)
+
+# ── «НЕ МОЯ ТЕРРИТОРИЯ»: торговый сам передаёт партнёра коллеге ──
+
+def handle_territory_start_callback(callback_query):
+    """Торговый нажал «Не моя территория» — показываем коллег кнопками.
+    Тех, кто уже держал этого партнёра, не предлагаем (чтобы не гонять
+    его по кругу)."""
+    from html import escape as _esc
+    cq_id = callback_query.get("id", "")
+    user_id = (callback_query.get("from", {}) or {}).get("id", "")
+    req_id = callback_query.get("data", "")[len("reactterr:"):]
+    db = load_db()
+    req = db.get("reactivation", {}).get(req_id)
+    if not req:
+        answer_callback_query(cq_id, "Запись не найдена (возможно, устарела)")
+        return
+    if req.get("status") not in ("pending_tp", "in_progress", "no_answer"):
+        answer_callback_query(cq_id, "Решение уже зафиксировано, передать нельзя")
+        return
+    contact = db.get("tp_contacts", {}).get(req["tp"])
+    if not contact or str(contact.get("id")) != str(user_id):
+        answer_callback_query(cq_id, "Это не твой партнёр")
+        return
+    held = set(req.get("held_by") or []) | {req["tp"]}
+    active, _ = batch_active_contacts(db)
+    options = [nm for nm in active if nm not in held]
+    if not options:
+        answer_callback_query(cq_id, "Передать некому")
+        return
+    message = callback_query.get("message", {}) or {}
+    req["terr_card"] = {"chat": (message.get("chat", {}) or {}).get("id"), "msg": message.get("message_id")}
+    code_map = db.setdefault("tp_name_codes", {})
+    rows = []
+    for nm in options:
+        code_map[tp_name_code(nm)] = nm
+        rows.append([{"text": clean_tp_name(nm), "callback_data": f"reactterrto:{req_id}:{tp_name_code(nm)}"}])
+    rows.append([{"text": "✖ Отмена", "callback_data": "reactterrx"}])
+    save_db(db)
+    answer_callback_query(cq_id)
+    send_message(f"↩️ Кому передать партнёра?\n<b>{_esc(req['partner'])}</b>", chat_id=user_id,
+                 reply_markup={"inline_keyboard": rows})
+
+def handle_territory_cancel_callback(callback_query):
+    cq_id = callback_query.get("id", "")
+    answer_callback_query(cq_id, "Ок, партнёр остался у тебя")
+    message = callback_query.get("message", {}) or {}
+    chat_id = (message.get("chat", {}) or {}).get("id")
+    msg_id = message.get("message_id")
+    if chat_id and msg_id:
+        clear_inline_keyboard(chat_id, msg_id)
+
+def handle_territory_pick_callback(callback_query):
+    """Торговый выбрал коллегу: партнёр переезжает к нему (статус «без
+    ответа», напоминания с нуля), у старого карточка гаснет, владельцу
+    приходит отбивка «кто кому передал» с кнопкой «Перекрепить»."""
+    from html import escape as _esc
+    cq_id = callback_query.get("id", "")
+    user_id = (callback_query.get("from", {}) or {}).get("id", "")
+    rest = callback_query.get("data", "")[len("reactterrto:"):]
+    parts = rest.split(":", 1)
+    if len(parts) != 2:
+        return
+    req_id, code = parts
+    db = load_db()
+    req = db.get("reactivation", {}).get(req_id)
+    message = callback_query.get("message", {}) or {}
+    list_chat = (message.get("chat", {}) or {}).get("id")
+    list_msg = message.get("message_id")
+    if list_chat and list_msg:
+        clear_inline_keyboard(list_chat, list_msg)  # список убираем сразу — двойной тап не передаст дважды
+    if not req or req.get("status") not in ("pending_tp", "in_progress", "no_answer"):
+        answer_callback_query(cq_id, "Уже передано или решение зафиксировано")
+        return
+    old_tp = req["tp"]
+    old_contact = db.get("tp_contacts", {}).get(old_tp)
+    if not old_contact or str(old_contact.get("id")) != str(user_id):
+        answer_callback_query(cq_id, "Это не твой партнёр")
+        return
+    new_tp = db.get("tp_name_codes", {}).get(code)
+    active, _ = batch_active_contacts(db)
+    held = set(req.get("held_by") or []) | {old_tp}
+    if not new_tp or new_tp not in active or new_tp in held:
+        answer_callback_query(cq_id, "Этому торговому передать нельзя")
+        return
+
+    now_iso = now_msk().isoformat()
+    req.setdefault("held_by", [old_tp])
+    req["held_by"].append(new_tp)
+    req["tp"] = new_tp
+    req["status"] = "pending_tp"
+    req["assigned_at"] = now_iso
+    req["last_touched_at"] = now_iso
+    req["reminded"] = False
+    old_card = req.pop("terr_card", None)
+    save_db(db)
+    answer_callback_query(cq_id, f"Передал: {clean_tp_name(new_tp)}")
+
+    if old_card and old_card.get("chat") and old_card.get("msg"):
+        clear_inline_keyboard(old_card["chat"], old_card["msg"])
+    send_message(f"✅ Передал партнёра {clean_tp_name(new_tp)}:\n{req['partner']}", chat_id=user_id)
+
+    full = req.get("partner_full", req["partner"])
+    try:
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+            "chat_id": active[new_tp]["id"],
+            "text": f"↪️ {_esc(clean_tp_name(old_tp))} передал тебе партнёра (не его территория):\n<b>{_esc(full)}</b>\n\nПрозвони и отметь результат:",
+            "parse_mode": "HTML",
+            "reply_markup": batch_card_markup(req_id, req),
+        }, timeout=10)
+    except Exception as e:
+        logging.error(f"handle_territory_pick_callback notify new tp error: {e}")
+
+    try:
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+            "chat_id": OWNER_ID,
+            "text": f"↪️ <b>{_esc(clean_tp_name(old_tp))}</b> передал партнёра → <b>{_esc(clean_tp_name(new_tp))}</b> (не его территория):\n{_esc(full)}",
+            "parse_mode": "HTML",
+            "reply_markup": {"inline_keyboard": [[
+                {"text": "🔁 Перекрепить на другого", "callback_data": f"reactreassign:{req_id}"}
+            ]]}
+        }, timeout=10)
+    except Exception as e:
+        logging.error(f"handle_territory_pick_callback notify owner error: {e}")
 
 # ── ВСЁ ЧТО БЫЛО В ТВОЁМ ФАЙЛЕ ──────────────────────────────
 
@@ -2243,6 +2719,7 @@ def check_reactivation_reminders():
                         {"text": "📵 Не дозвонился", "callback_data": f"react:{req_id}:no_answer"},
                     ]]}
                 }
+                payload["reply_markup"]["inline_keyboard"] = _with_territory(req_id, req, payload["reply_markup"]["inline_keyboard"])
                 try:
                     requests.post(url, json=payload, timeout=10)
                 except Exception as e:
@@ -2302,6 +2779,16 @@ def tg_webhook():
                     handle_reactivation_reassign_pick_callback(callback_query)
                 elif cq_data.startswith("reactreassign:"):
                     handle_reactivation_reassign_callback(callback_query)
+                elif cq_data.startswith("reactterrto:"):
+                    handle_territory_pick_callback(callback_query)
+                elif cq_data.startswith("reactterr:"):
+                    handle_territory_start_callback(callback_query)
+                elif cq_data == "reactterrx":
+                    handle_territory_cancel_callback(callback_query)
+                elif cq_data.startswith("batchoff:"):
+                    handle_batch_office_toggle_callback(callback_query)
+                elif cq_data == "batchgo":
+                    handle_batch_go_callback(callback_query)
                 return jsonify({"ok": True})
 
             msg = data.get("message", {})
@@ -2332,6 +2819,11 @@ def tg_webhook():
                 handle_checkin_photo(msg, db)
                 return jsonify({"ok": True})
 
+            # Документ от владельца — это список спящих (sleeping_list.json)
+            if "document" in msg and str(user_id) == str(OWNER_ID):
+                handle_sleeping_upload(msg, user_id)
+                return jsonify({"ok": True})
+
             if not text or text.startswith("/"):
                 # Отвечаем на /start — сразу просим явно выбрать своё имя из списка,
                 # вместо ненадёжного угадывания по first name (тёзки, разные написания)
@@ -2349,6 +2841,13 @@ def tg_webhook():
                 elif text == "/reactivate" and str(user_id) == str(OWNER_ID):
                     db = load_db()
                     start_reactivation_flow(user_id, db)
+                elif text.split()[0].split("@")[0] == "/batch" and str(user_id) == str(OWNER_ID):
+                    db = load_db()
+                    parts = text.split()
+                    n = BATCH_DEFAULT_SIZE
+                    if len(parts) > 1 and parts[1].isdigit():
+                        n = max(1, min(int(parts[1]), 200))
+                    start_batch_flow(user_id, db, n)
                 return jsonify({"ok": True})
 
             # Владелец сейчас вводит ФИО партнёра на отработку — перехватываем
@@ -2919,6 +3418,7 @@ def setup_bot_commands():
         {"command": "start", "description": "Начать / зарегистрироваться в боте"},
         {"command": "whoami", "description": "Перерегистрироваться (выбрать себя заново)"},
         {"command": "reactivate", "description": "Отдать спящего партнёра торговому на отработку"},
+        {"command": "batch", "description": "Раздать пачку спящих партнёров торговым"},
     ]
     try:
         r = requests.post(url, json={

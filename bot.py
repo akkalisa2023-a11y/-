@@ -43,6 +43,10 @@ REACTIVATION_REMINDER_HOURS = float(os.environ.get("REACTIVATION_REMINDER_HOURS"
 # снова — повторяется (не один раз), пока статус не сменится на другой
 NO_ANSWER_REMINDER_DAYS = float(os.environ.get("NO_ANSWER_REMINDER_DAYS", "3"))
 
+# Как часто повторять напоминание по "Без ответа" / "В работе" после первого
+# (первое приходит через REACTIVATION_REMINDER_HOURS, дальше — каждые N дней)
+REACTIVATION_REPEAT_DAYS = float(os.environ.get("REACTIVATION_REPEAT_DAYS", "1"))
+
 # Сколько напоминаний по реактивации один торговый получает за один запуск
 # планировщика (раз в 30 мин) — чтобы после выходных не прилетело всё разом
 MAX_REMINDERS_PER_TP_RUN = int(os.environ.get("MAX_REMINDERS_PER_TP_RUN", "3"))
@@ -2450,54 +2454,13 @@ def build_public_praise(tp_list, has_bad=False, last_date=None, days_in_month=No
         return f"\n━━━━━━━━━━━━━━━━━━━━\n💚 <b>НО ЕСТЬ И ХОРОШИЕ НОВОСТИ!</b>\n\n{praise}\nФёдор гордится! 💪"
 
 
-A3_START = "2026-07"
-
-def a3_by_tp(db, month_key):
-    """Активные партнёры 3м+ по торговым: партнёр продавал (без фрода) и в этом,
-    и в предыдущем месяце. Считаем только с июля 2026 — иначе None
-    (тогда рейтинг использует старый показатель «3+ продаж»).
-    Тот же расчёт, что в дашборде."""
-    months = db.get("months", {})
-    y, mo = (int(x) for x in month_key.split("-"))
-    pk = f"{y-1}-12" if mo == 1 else f"{y}-{mo-1:02d}"
-    if month_key < A3_START or pk < A3_START or month_key not in months or pk not in months:
-        return None
-    rt_map = {}
-    for m in months.values():
-        for p in m.get("partners", []):
-            rt = (p.get("rt") or "").strip().upper()
-            if rt:
-                rt_map[norm_name(p.get("r", ""))] = rt
-
-    def month_map(mk):
-        res = {}
-        for p in months[mk].get("partners", []):
-            nf = (p.get("acts", 0) or 0) - (p.get("fraud", 0) or 0)
-            if nf <= 0:
-                continue
-            rt = (p.get("rt") or "").strip().upper()
-            key = rt or rt_map.get(norm_name(p.get("r", ""))) or ("n:" + norm_name(p.get("r", "")))
-            e = res.setdefault(key, {})
-            e[p.get("t")] = e.get(p.get("t"), 0) + nf
-        return res
-
-    cur, prev = month_map(month_key), month_map(pk)
-    by_tp = {}
-    for key, tps in cur.items():
-        if key in prev:
-            tp = max(tps, key=lambda k: tps[k])
-            by_tp[tp] = by_tp.get(tp, 0) + 1
-    return by_tp
-
-def calc_efficiency(d, privl, a3=None):
+def calc_efficiency(d, privl):
     privl_map  = {p["n"]: p for p in privl}
     tp_list    = d.get("tp", [])
     if not tp_list:
         return []
     max_acts   = max((t["acts"] for t in tp_list), default=1)
-    p3_of      = (lambda t: a3.get(t["name"], 0)) if a3 is not None else (lambda t: t["p3"])
-    max_p3     = max((p3_of(t) for t in tp_list), default=1)
-    max_p3     = max(max_p3, 1)
+    max_p3     = max((t["p3"]   for t in tp_list), default=1)
     max_privl  = max((privl_map.get(t["name"], {}).get("u", 0) for t in tp_list), default=1)
     max_privl  = max(max_privl, 1)  # защита от деления на ноль
     result = []
@@ -2505,7 +2468,7 @@ def calc_efficiency(d, privl, a3=None):
         pm    = privl_map.get(t["name"], {})
         score = max(0, round(
             (t["acts"]/max_acts)*40 +
-            (p3_of(t)/max_p3)*25 +
+            (t["p3"]/max_p3)*25 +
             (pm.get("u", 0)/max_privl)*20 -
             (t.get("fraud_pct", 0))*0.3
         ))
@@ -2694,22 +2657,29 @@ def check_reactivation_reminders():
         now = now_msk()
         changed = False
         sent_per_tp = {}
-        for req_id, req in reactivation.items():
+        # Самые давние — первыми, чтобы при лимите на торгового никто не залёживался
+        ordered = sorted(reactivation.items(),
+                         key=lambda kv: kv[1].get("last_touched_at") or kv[1].get("assigned_at") or "")
+        for req_id, req in ordered:
             status = req.get("status")
             if status not in ("pending_tp", "in_progress", "no_answer"):
                 continue
 
             is_no_answer = status == "no_answer"
-            # Для no_answer напоминание повторяется — не блокируем флагом "reminded"
-            if not is_no_answer and req.get("reminded"):
-                continue
+            # Все три статуса теперь повторяются; is_repeat — это 2-е и далее напоминание
+            is_repeat = (not is_no_answer) and bool(req.get("reminded"))
 
             touched_at = req.get("last_touched_at") or req.get("assigned_at")
             try:
                 since = datetime.fromisoformat(touched_at)
             except Exception:
                 continue
-            threshold = timedelta(days=NO_ANSWER_REMINDER_DAYS) if is_no_answer else timedelta(hours=REACTIVATION_REMINDER_HOURS)
+            if is_no_answer:
+                threshold = timedelta(days=NO_ANSWER_REMINDER_DAYS)
+            elif is_repeat:
+                threshold = timedelta(days=REACTIVATION_REPEAT_DAYS)
+            else:
+                threshold = timedelta(hours=REACTIVATION_REMINDER_HOURS)
             if now - since < threshold:
                 continue
 
@@ -2765,15 +2735,15 @@ def check_reactivation_reminders():
                     requests.post(url, json=payload, timeout=10)
                 except Exception as e:
                     logging.error(f"check_reactivation_reminders tp notify error: {e}")
-                send_message(owner_text_with_contact, chat_id=OWNER_ID)
+                if not is_repeat:  # владельцу повторы не дублируем, чтобы не засорять чат
+                    send_message(owner_text_with_contact, chat_id=OWNER_ID)
             else:
                 send_message(owner_text_no_contact, chat_id=OWNER_ID)
 
-            if is_no_answer:
-                # Повторяющееся напоминание — сдвигаем точку отсчёта на "сейчас",
-                # чтобы следующее напоминание пришло ровно через NO_ANSWER_REMINDER_DAYS
-                req["last_touched_at"] = now.isoformat()
-            else:
+            # Сдвигаем точку отсчёта на "сейчас" — следующее напоминание придёт
+            # через NO_ANSWER_REMINDER_DAYS (не дозвонился) или REACTIVATION_REPEAT_DAYS
+            req["last_touched_at"] = now.isoformat()
+            if not is_no_answer:
                 req["reminded"] = True
             changed = True
         if changed:
@@ -3256,7 +3226,7 @@ def send_report():
             # Нет помесячных данных за этот месяц — старый формат/фолбэк
             return db.get("privl", [])
 
-        eff = calc_efficiency(months[cur_key], privl_for_month(cur_key), a3=a3_by_tp(db, cur_key))
+        eff = calc_efficiency(months[cur_key], privl_for_month(cur_key))
 
         data = {
             "current":    months[cur_key],

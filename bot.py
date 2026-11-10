@@ -1063,24 +1063,87 @@ def reconcile_reactivations(db, cur_key):
     if changed:
         save_db(db)
 
+# ── ЕЖЕНЕДЕЛЬНАЯ СВОДКА ПО ПАРТНЁРАМ + АЛЕРТ «ЗАТИХ» ───────────
+WEEKLY_DIGEST_HOUR = int(os.environ.get("WEEKLY_DIGEST_HOUR", "10"))  # во сколько по Москве в понедельник
+QUIET_MULT = 3        # тишина = во столько раз дольше обычного интервала между продажами
+QUIET_MIN_DAYS = 3    # но не раньше чем через столько дней
+QUIET_MAX_DAYS = 14   # и порог не выше
+QUIET_GIVEUP_DAYS = 30  # дольше — уже «спящий», это дело реактивации
+
+MONTH_SHORT = ["", "Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"]
+
+def _shift_month(key, delta):
+    y, m = (int(x) for x in key.split("-"))
+    idx = y * 12 + (m - 1) + delta
+    return f"{idx // 12}-{idx % 12 + 1:02d}"
+
+def _month_label(key):
+    return MONTH_SHORT[int(key.split("-")[1])]
+
+def _tp_contact_for(db, tp_name):
+    """Контакт торгового в боте. None — если не зарегистрирован, уволен или в отпуске."""
+    if not tp_name:
+        return None
+    contacts = db.get("tp_contacts", {})
+    tp_by_norm = {norm_name(n): n for n in get_all_tp_names(db, include_inactive=True)}
+    canonical = tp_by_norm.get(norm_name(tp_name), tp_name)
+    if canonical in set(db.get("inactive_tp", [])) or is_on_vacation(db, canonical):
+        return None
+    contact = contacts.get(canonical)
+    if not contact:
+        matched = match_tp_name(canonical, contacts.keys())
+        contact = contacts.get(matched) if matched else None
+    return contact if (contact and contact.get("id")) else None
+
+def _send_chunked(chat_id, head, lines):
+    """Шапка + список; длинный список режем на несколько сообщений (лимит Telegram)."""
+    parts, cur_lines, cur_len = [], [], len(head)
+    for ln in lines:
+        if cur_lines and cur_len + len(ln) + 1 > 3500:
+            parts.append(cur_lines)
+            cur_lines, cur_len = [], len(head)
+        cur_lines.append(ln)
+        cur_len += len(ln) + 1
+    if cur_lines:
+        parts.append(cur_lines)
+    ok = True
+    for chunk in parts:
+        res = send_message(head + "\n\n" + "\n".join(chunk), chat_id=chat_id)
+        if not res.get("ok"):
+            ok = False
+    return ok
+
+def _month_index(db, mk):
+    """Партнёры месяца без фрода: {норм.имя: {name, tp, ids}} и {id: акты}.
+    id — RT-код или нормализованное имя (так партнёр находится между месяцами,
+    даже если имя записано чуть иначе)."""
+    entries, counts = {}, {}
+    for p in db.get("months", {}).get(mk, {}).get("partners", []):
+        name = (p.get("r") or "").strip()
+        if not name:
+            continue
+        nn = norm_name(name)
+        rt = (p.get("rt") or "").strip().upper()
+        ids = {nn} | ({rt} if rt else set())
+        n = p.get("acts", 0) - p.get("fraud", 0)
+        e = entries.setdefault(nn, {"name": name, "tp": p.get("t"), "ids": set()})
+        e["ids"] |= ids
+        if p.get("t"):
+            e["tp"] = p.get("t")
+        for i in ids:
+            counts[i] = counts.get(i, 0) + n
+    return entries, counts
+
 def reconcile_partner_trends(db, cur_key, prev_key):
-    """Вызывается после каждой заливки активаций. Сравнивает ПРОГНОЗ партнёра
-    на конец месяца (по текущему темпу — тем же способом, что вкладка
-    «Партнёры» в дашборде) с его ФАКТОМ за прошлый месяц и шлёт торговому
-    список тех, кто идёт вниз. "Упал" — только если прогноз ниже прошлого
-    месяца на 20% и больше. "Ушёл в ноль" — без всякого порога: любой, кто
-    в прошлом месяце активировал хоть раз (1, 5 или 100), а сейчас на нуле
-    или вообще пропал из отчёта. Уведомляем только при СМЕНЕ
-    статуса в рамках месяца — про того же партнёра в том же статусе повторно
-    не пишем."""
+    """Недельная часть: «ушли в ноль» и «просели». Считаем без фрода, как и
+    «активные 3м+» в дашборде. «Ушёл в ноль» — в прошлом месяце продавал,
+    в этом 0 или нет в отчёте (ровно те, кто может выпасть из 3м+).
+    «Просел» — прогноз на конец месяца ниже прошлого месяца на 20%+.
+    Вызывается по понедельникам (weekly_partner_digest)."""
     from html import escape as _esc
     if not prev_key:
         return
     cur_month = db["months"].get(cur_key, {})
-    cur_partners  = {p.get("r", "").strip(): p for p in cur_month.get("partners", [])}
-    prev_partners = {p.get("r", "").strip(): p for p in db["months"].get(prev_key, {}).get("partners", [])}
-    trend_state = db.setdefault("partner_trend_state", {})
-
     last_date = cur_month.get("last_date")
     days_passed, days_in_month = days_passed_for_forecast(last_date)
 
@@ -1089,84 +1152,145 @@ def reconcile_partner_trends(db, cur_key, prev_key):
             return round(acts / days_passed * days_in_month)
         return acts
 
-    by_tp = {}  # {tp_name: {"zero": [(name, prev)], "decline": [(name, prev, forecast, pct)]}}
-    for name, pp in prev_partners.items():
-        prev_acts = pp.get("acts", 0)
-        if prev_acts <= 0:
-            continue
-        cp = cur_partners.get(name)
-        cur_acts = cp.get("acts", 0) if cp else 0
-        tp_name = (cp.get("t") if cp else pp.get("t"))
-        forecast_acts = forecast_for(cur_acts)
+    ent_prev, cnt_prev = _month_index(db, prev_key)
+    ent_cur, cnt_cur = _month_index(db, cur_key)
+    cur_tp = {}
+    for e in ent_cur.values():
+        for i in e["ids"]:
+            cur_tp[i] = e["tp"]
 
-        if cur_acts == 0:
-            status = "zero"
-        elif forecast_acts < prev_acts and round((prev_acts - forecast_acts) / prev_acts * 100) >= 20:
-            status = "decline"
-        else:
-            status = "ok"
-
-        # Состояние ведём в разрезе месяца: каждый месяц — новое сравнение,
-        # поэтому "уже сообщали" в прошлом месяце не глушит уведомление в этом.
-        key = f"{cur_key}|{name}"
-        if status == "ok":
-            if key in trend_state:
-                trend_state[key]["notified_status"] = "none"  # восстановился — при новом падении уведомим заново
+    by_tp = {}
+    for e in ent_prev.values():
+        n_prev = max((cnt_prev.get(i, 0) for i in e["ids"]), default=0)
+        if n_prev <= 0:
             continue
-        state = trend_state.setdefault(key, {"notified_status": "none"})
-        if state.get("notified_status") == status:
-            continue
-        state["notified_status"] = status
+        n_cur = max((cnt_cur.get(i, 0) for i in e["ids"]), default=0)
+        tp_name = next((cur_tp[i] for i in e["ids"] if cur_tp.get(i)), None) or e["tp"]
         bucket = by_tp.setdefault(tp_name, {"zero": [], "decline": []})
-        if status == "zero":
-            bucket["zero"].append((name, prev_acts))
+        if n_cur <= 0:
+            bucket["zero"].append((e["name"], n_prev))
         else:
-            pct = round((prev_acts - forecast_acts) / prev_acts * 100)
-            bucket["decline"].append((name, prev_acts, forecast_acts, pct))
+            fc = forecast_for(n_cur)
+            if fc < n_prev:
+                pct = round((n_prev - fc) / n_prev * 100)
+                if pct >= 20:
+                    bucket["decline"].append((e["name"], n_prev, fc, pct))
 
-    day_note = ""
+    day_txt = ""
     if last_date:
         try:
-            day_note = f"<i>Прогноз по темпу на {int(last_date.split('-')[2])}-е число, сравнение с прошлым месяцем.</i>"
+            day_txt = f", по темпу на {int(last_date.split('-')[2])}-е число"
         except Exception:
-            day_note = ""
+            day_txt = ""
+    head_zero = ("🔴 <b>Ушли в ноль</b> — в прошлом месяце продавали, в этом пока ни одной активации. "
+                 "Чтобы остаться в «активных 3м+», им надо продать в этом месяце:")
+    head_decl = f"🟡 <b>Просели</b> — прогноз на месяц ниже прошлого на 20% и больше{day_txt}:"
 
-    all_tp_names = get_all_tp_names(db, include_inactive=True)
-    tp_by_norm = {norm_name(n): n for n in all_tp_names}
-    contacts = db.get("tp_contacts", {})
-
-    header = "⚠️ <b>Обрати внимание на партнёров:</b>"
     for tp_name, bucket in by_tp.items():
-        if not tp_name:
-            continue
-        tp_canonical = tp_by_norm.get(norm_name(tp_name), tp_name)
-        contact = contacts.get(tp_canonical)
+        contact = _tp_contact_for(db, tp_name)
         if not contact:
-            matched = match_tp_name(tp_canonical, contacts.keys())
-            contact = contacts.get(matched) if matched else None
-        if not (contact and contact.get("id")):
             continue
-        lines = []
-        for name, prev in sorted(bucket["zero"], key=lambda x: -x[1]):
-            lines.append(f"🔴 {_esc(name)} — сейчас 0 (в прошлом месяце было {prev})")
-        for name, prev, fc, pct in sorted(bucket["decline"], key=lambda x: -x[3]):
-            lines.append(f"🟡 {_esc(name)} — прогноз {fc} против {prev} в прошлом месяце (−{pct}%)")
+        if bucket["zero"]:
+            lines = [f"• {_esc(n)} — было {prev}" for n, prev in sorted(bucket["zero"], key=lambda x: -x[1])]
+            _send_chunked(contact["id"], head_zero, lines)
+        if bucket["decline"]:
+            lines = [f"• {_esc(n)} — прогноз {fc} против {prev} (−{pct}%)"
+                     for n, prev, fc, pct in sorted(bucket["decline"], key=lambda x: -x[3])]
+            _send_chunked(contact["id"], head_decl, lines)
 
-        # Лимит Telegram — 4096 символов на сообщение; без порога список может
-        # быть длинным, поэтому режем на несколько сообщений.
-        head = header + ("\n" + day_note if day_note else "")
-        parts, cur_lines, cur_len = [], [], len(head)
-        for ln in lines:
-            if cur_lines and cur_len + len(ln) + 1 > 3500:
-                parts.append(cur_lines)
-                cur_lines, cur_len = [], len(head)
-            cur_lines.append(ln)
-            cur_len += len(ln) + 1
-        if cur_lines:
-            parts.append(cur_lines)
-        for chunk in parts:
-            send_message(head + "\n\n" + "\n".join(chunk), chat_id=contact["id"])
+def weekly_partner_digest():
+    """Каждый понедельник: «ушли в ноль» + «просели».
+    Если отчёт активаций давно не заливали — не шлём (иначе цифры врут) и
+    предупреждаем владельца."""
+    try:
+        db = load_db()
+        months = db.get("months", {})
+        now = now_msk()
+        cur_key = f"{now.year}-{now.month:02d}"
+        cur = months.get(cur_key) or {}
+        last_date = cur.get("last_date")
+        stale = True
+        if last_date:
+            try:
+                stale = (now.date() - datetime.strptime(last_date, "%Y-%m-%d").date()).days > 3
+            except Exception:
+                stale = True
+        if stale:
+            shown = last_date or "нет данных за этот месяц"
+            send_message(f"⚠️ Недельная сводка по партнёрам не ушла: отчёт активаций давно не обновлялся (последние данные: {shown}). Залей свежий отчёт — сводка придёт в следующий понедельник.", chat_id=OWNER_ID)
+            return
+        prev_key = _shift_month(cur_key, -1)
+        if int(last_date.split("-")[2]) >= 7 and prev_key in months:
+            reconcile_partner_trends(db, cur_key, prev_key)
+        logging.info("Weekly partner digest sent")
+    except Exception as e:
+        logging.error(f"weekly_partner_digest error: {e}")
 
+def reconcile_partner_quiet(db, cur_key):
+    """Алерт «партнёр затих»: у каждого партнёра свой порог — в 3 раза дольше
+    его обычного интервала между продажами (по прошлому месяцу), от 3 до 14
+    дней. Дни считаем от последней даты в отчёте. Партнёр с < 3 активаций
+    в прошлом месяце не проверяется (нет базы). По одной паузе — одно
+    сообщение. Срабатывает при заливке отчёта."""
+    from html import escape as _esc
+    cur_month = db["months"].get(cur_key, {})
+    ref = cur_month.get("last_date")
+    if not ref:
+        return
+    try:
+        ref_d = datetime.strptime(ref, "%Y-%m-%d")
+    except Exception:
+        return
+    prev_key = _shift_month(cur_key, -1)
+    y, mo = (int(x) for x in prev_key.split("-"))
+    prev_days = calendar.monthrange(y, mo)[1]
+    state = db.setdefault("partner_quiet_state", {})
+
+    merged = {}
+    for mk in (prev_key, cur_key):
+        for p in db["months"].get(mk, {}).get("partners", []):
+            name = (p.get("r") or "").strip()
+            if not name:
+                continue
+            rt = (p.get("rt") or "").strip().upper()
+            key = rt or norm_name(name)
+            e = merged.setdefault(key, {"name": name, "tp": p.get("t"), "ld": None, "prev": 0})
+            e["name"] = name
+            e["tp"] = p.get("t") or e["tp"]
+            if p.get("ld") and (not e["ld"] or p["ld"] > e["ld"]):
+                e["ld"] = p["ld"]
+            if mk == prev_key:
+                e["prev"] += p.get("acts", 0) - p.get("fraud", 0)
+
+    by_tp = {}
+    for key, e in merged.items():
+        if not (e["ld"] and e["tp"] and e["prev"] >= 3):
+            continue
+        try:
+            days = (ref_d - datetime.strptime(e["ld"], "%Y-%m-%d")).days
+        except Exception:
+            continue
+        interval = prev_days / e["prev"]
+        threshold = min(max(int(-(-interval * QUIET_MULT // 1)), QUIET_MIN_DAYS), QUIET_MAX_DAYS)
+        if not (threshold <= days <= QUIET_GIVEUP_DAYS):
+            continue
+        skey = f"{key}|{e['ld']}"
+        if skey in state:
+            continue
+        by_tp.setdefault(e["tp"], []).append((days, e["name"], e["ld"], e["prev"], skey))
+
+    head = ("🔕 <b>Партнёры, которые затихли.</b> Это твои действующие партнёры: раньше продавали регулярно, "
+            "а сейчас дольше обычного нет активаций. Позвони, узнай, в чём дело:")
+    for tp_name, items in by_tp.items():
+        contact = _tp_contact_for(db, tp_name)
+        if not contact:
+            continue
+        items.sort(key=lambda x: -x[0])
+        lines = [f"• {_esc(n)} — обычно ~{prev} акт./мес, последняя активация {ld[8:10]}.{ld[5:7]}, тишина {d} дн."
+                 for d, n, ld, prev, _ in items]
+        if _send_chunked(contact["id"], head, lines):
+            for it in items:
+                state[it[4]] = True
     save_db(db)
 
 def resolve_and_check_territory(db, tp_name, lat, lon, contact_user_id):
@@ -2042,6 +2166,15 @@ def build_report(data, month_label, is_final=False):
         f"👥 <b>Партнёров активных:</b> {ap}",
         f"🟢 <b>3+ продаж:</b> {p3}  |  🥇 <b>10+ продаж:</b> {p10}",
     ]
+    a3 = data.get("a3")
+    if a3:
+        a3_line = f"✅ <b>Активных партнёров 3м+:</b> {a3['total']}"
+        if a3.get("prev_total") is not None:
+            diff = a3["total"] - a3["prev_total"]
+            a3_line += f" ({'↑' if diff >= 0 else '↓'}{abs(diff)} vs {a3['prev_total']} в пред. мес.)"
+        if not is_final:
+            a3_line += " — месяц не закончен, цифра растёт"
+        lines.append(a3_line)
 
     fw = fraud_warning(fraud_pct)
     if fw:
@@ -2454,13 +2587,65 @@ def build_public_praise(tp_list, has_bad=False, last_date=None, days_in_month=No
         return f"\n━━━━━━━━━━━━━━━━━━━━\n💚 <b>НО ЕСТЬ И ХОРОШИЕ НОВОСТИ!</b>\n\n{praise}\nФёдор гордится! 💪"
 
 
-def calc_efficiency(d, privl):
+# ── «АКТИВНЫЕ ПАРТНЁРЫ 3м+» — то же правило, что в дашборде ───────
+# Партнёр засчитан в месяце M, если у него есть хотя бы 1 активация (без фрода)
+# и в M, и в предыдущем календарном месяце. Считаем только с июля 2026.
+A3_START = "2026-07"
+
+def _a3_rt_map(db):
+    m = {}
+    for mk in sorted(db.get("months", {})):
+        for p in db["months"][mk].get("partners", []):
+            rt = (p.get("rt") or "").strip().upper()
+            if rt:
+                m[norm_name(p.get("r"))] = rt
+    return m
+
+def _a3_key(p, rtmap):
+    rt = (p.get("rt") or "").strip().upper()
+    if rt:
+        return rt
+    n = norm_name(p.get("r"))
+    return rtmap.get(n) or ("n:" + n)
+
+def _a3_month_map(db, mk, rtmap):
+    res = {}
+    for p in db.get("months", {}).get(mk, {}).get("partners", []):
+        nf = (p.get("acts") or 0) - (p.get("fraud") or 0)
+        if nf <= 0:
+            continue
+        e = res.setdefault(_a3_key(p, rtmap), {"tp": {}})
+        e["tp"][p.get("t")] = e["tp"].get(p.get("t"), 0) + nf
+    return res
+
+def compute_a3(db, mk):
+    """{"total": N, "byTp": {торговый: N}} или None, если для месяца
+    не посчитать (раньше июля 2026 или нет прошлого месяца)."""
+    pk = _shift_month(mk, -1)
+    months = db.get("months", {})
+    if mk < A3_START or pk < A3_START or mk not in months or pk not in months:
+        return None
+    rtmap = _a3_rt_map(db)
+    cur, prev = _a3_month_map(db, mk, rtmap), _a3_month_map(db, pk, rtmap)
+    by_tp, total = {}, 0
+    for k, e in cur.items():
+        if k in prev:
+            tp = max(e["tp"], key=lambda t: e["tp"][t])
+            by_tp[tp] = by_tp.get(tp, 0) + 1
+            total += 1
+    return {"total": total, "byTp": by_tp}
+
+def calc_efficiency(d, privl, a3=None):
+    """Рейтинг эффективности — те же веса, что в дашборде. 25% веса — «активные
+    партнёры 3м+» (a3 из compute_a3); если для месяца их не посчитать — старое «3+ продаж»."""
     privl_map  = {p["n"]: p for p in privl}
     tp_list    = d.get("tp", [])
     if not tp_list:
         return []
+    def p3_of(t):
+        return a3["byTp"].get(t["name"], 0) if a3 is not None else t["p3"]
     max_acts   = max((t["acts"] for t in tp_list), default=1)
-    max_p3     = max((t["p3"]   for t in tp_list), default=1)
+    max_p3     = max(max((p3_of(t) for t in tp_list), default=1), 1)
     max_privl  = max((privl_map.get(t["name"], {}).get("u", 0) for t in tp_list), default=1)
     max_privl  = max(max_privl, 1)  # защита от деления на ноль
     result = []
@@ -2468,7 +2653,7 @@ def calc_efficiency(d, privl):
         pm    = privl_map.get(t["name"], {})
         score = max(0, round(
             (t["acts"]/max_acts)*40 +
-            (t["p3"]/max_p3)*25 +
+            (p3_of(t)/max_p3)*25 +
             (pm.get("u", 0)/max_privl)*20 -
             (t.get("fraud_pct", 0))*0.3
         ))
@@ -2968,7 +3153,8 @@ def upload_activations():
         idx = all_keys.index(month)
         prev_key = all_keys[idx - 1] if idx > 0 else None
         reconcile_reactivations(db, month)
-        reconcile_partner_trends(db, month, prev_key)
+        if month == all_keys[-1]:
+            reconcile_partner_quiet(db, month)
     except Exception as e:
         logging.error(f"reconcile after upload_activations error: {e}")
 
@@ -3226,12 +3412,16 @@ def send_report():
             # Нет помесячных данных за этот месяц — старый формат/фолбэк
             return db.get("privl", [])
 
-        eff = calc_efficiency(months[cur_key], privl_for_month(cur_key))
+        a3_cur  = compute_a3(db, cur_key)
+        a3_prev = compute_a3(db, _shift_month(cur_key, -1))
+        eff = calc_efficiency(months[cur_key], privl_for_month(cur_key), a3_cur)
 
         data = {
             "current":    months[cur_key],
             "prev":       months[prev_key] if prev_key else None,
-            "efficiency": eff[:5]
+            "efficiency": eff[:5],
+            "a3": ({"total": a3_cur["total"], "prev_total": a3_prev["total"] if a3_prev else None}
+                   if a3_cur else None)
         }
         text   = build_report(data, month_label, is_final=is_final_month)
         result = send_message(text)
@@ -3526,6 +3716,12 @@ _scheduler.add_job(check_missed_checkins, "interval", minutes=10, id="checkin_mi
 _scheduler.add_job(
     send_daily_checkin_summary, "cron",
     day_of_week=CHECKIN_WORKDAYS, hour=DAILY_SUMMARY_HOUR, minute=0, id="daily_checkin_summary"
+)
+
+_scheduler.add_job(
+    weekly_partner_digest, "cron",
+    day_of_week="mon", hour=WEEKLY_DIGEST_HOUR, minute=0, id="weekly_partner_digest",
+    misfire_grace_time=3600, coalesce=True
 )
 
 _scheduler.start()

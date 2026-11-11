@@ -80,6 +80,8 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
 .upload-btn:hover{background:var(--mint);color:#0e0e0e}
 input[type=file]{display:none}
 
+.tp-filter{padding:6px 12px;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius-pill);color:var(--text);font-size:12px;font-family:inherit;cursor:pointer;max-width:220px}
+.tp-filter:focus{outline:none;border-color:var(--mint)}
 /* TABS */
 .tabs{background:var(--bg2);border-bottom:1px solid var(--border);padding:0 24px;display:flex;gap:0}
 .tab{padding:13px 20px;cursor:pointer;border-bottom:2px solid transparent;font-size:13px;color:var(--text3);transition:color .2s,border-color .2s;font-weight:500;display:flex;align-items:center;gap:7px}
@@ -257,6 +259,10 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
     <span class="logo-sub">Партнёрский дашборд</span>
   </div>
   <div class="month-btns" id="month-btns"></div>
+  <div id="tp-filter-wrap" style="display:none;align-items:center;gap:6px;margin-left:8px">
+    <span style="font-size:12px;color:var(--text3)">Торговый:</span>
+    <select id="tp-filter" class="tp-filter" onchange="setMyTp(this.value)"></select>
+  </div>
   <div class="upload-area">
     <div id="admin-upload-controls" style="display:none;gap:6px;flex-wrap:wrap;align-items:center">
       <label class="upload-btn" for="file-act">＋ Активации</label>
@@ -627,6 +633,27 @@ let DB = initStorage();
 let cur = Object.keys(DB.months).sort().reverse()[0];
 let opsC=null, mainC=null, privlC=null;
 let prAllCache=[];
+// Фильтр «Мои партнёры»: выбранный торговый (пусто = все). Запоминается в браузере.
+let MY_TP = localStorage.getItem('as_my_tp') || '';
+function myTpMatch(name){ return !MY_TP || normName(name)===normName(MY_TP); }
+function myTpMatchClean(name){ return !MY_TP || normName(name)===normName(dispName(MY_TP)); }
+function renderTpFilter(){
+  const sel=document.getElementById('tp-filter'); if(!sel) return;
+  const names=getAllTpNamesFromDb().slice();
+  if(MY_TP && !names.some(n=>normName(n)===normName(MY_TP))) names.push(MY_TP);
+  names.sort((a,b)=>dispName(a).localeCompare(dispName(b),'ru'));
+  sel.innerHTML='<option value="">Все торговые</option>'+names.map(n=>
+    `<option value="${escHtml(n)}"${normName(n)===normName(MY_TP)?' selected':''}>${escHtml(dispName(n))}</option>`).join('');
+}
+function setMyTp(v){
+  MY_TP=v||'';
+  try{ if(MY_TP) localStorage.setItem('as_my_tp',MY_TP); else localStorage.removeItem('as_my_tp'); }catch(e){}
+  renderPRSegs();
+  renderPRTable(prAllCache,currentPRFilter);
+  const n=document.getElementById('pr-3mo-note');
+  if(n && n.style.display!=='none') checkThreeMonthDecline();
+  renderReactivationFromCache();
+}
 let currentPRFilter='all';
 
 function toast(msg){
@@ -941,6 +968,7 @@ function render(){
   currentPRFilter='all';
   document.querySelectorAll('.sc').forEach((e,i)=>{e.classList.toggle('on',i===0);});
   document.getElementById('pr-month-lbl').textContent=fmtM(cur)+(pv?` · vs ${fmtM(pv)}`:'');
+  renderTpFilter();
 }
 
 // ─── АКТИВНЫЕ 3+ МЕСЯЦА (новый KPI, добавлен рядом со старым «3+ продаж») ───
@@ -1312,10 +1340,12 @@ function buildPRAll(partners, prevPartners, lastDate){
 }
 
 function renderPRSegs(){
-  const all=prAllCache;
+  const all=prAllCache.filter(p=>myTpMatch(p.t));
   document.getElementById('s-all').textContent=all.length;
   document.getElementById('s-p3').textContent=all.filter(p=>p.acts>=3).length;
   document.getElementById('s-p10').textContent=all.filter(p=>p.acts>=10).length;
+  const a3El=document.getElementById('s-a3');
+  if(a3El) a3El.textContent = !A3_CUR ? '—' : (MY_TP ? all.filter(p=>p.a3).length : A3_CUR.total);
 }
 
 function seg(el,filter){
@@ -1378,6 +1408,7 @@ function checkThreeMonthDecline(){
     }
   });
   declining.sort((a,b)=>b.drop_pct-a.drop_pct);
+  for(let i=declining.length-1;i>=0;i--) if(!myTpMatch(declining[i].t)) declining.splice(i,1);
 
   const note = document.getElementById('pr-3mo-note');
   note.style.display='block';
@@ -1398,7 +1429,7 @@ function checkThreeMonthDecline(){
 }
 
 function renderPRTable(all,filter){
-  let data=all;
+  let data=all.filter(p=>myTpMatch(p.t));
   if(filter==='p3') data=all.filter(p=>p.acts>=3);
   if(filter==='p10') data=all.filter(p=>p.acts>=10);
   if(filter==='fraud') data=all.filter(p=>p.fraud>0).sort((a,b)=>b.fraud-a.fraud);
@@ -1557,6 +1588,7 @@ function sw(id,el){
   el.classList.add('on');
   // На Привлечение, Карте и Реактивации — прячем верхние кнопки месяцев, там свои элементы
   document.getElementById('month-btns').style.display = (id==='at'||id==='mp'||id==='rc') ? 'none' : 'flex';
+  document.getElementById('tp-filter-wrap').style.display = (id==='pr'||id==='rc') ? 'flex' : 'none';
   if(id==='at'){renderPrivlMonthBtns();renderPrivl();}
   if(id==='ef')renderEfficiency();
   if(id==='mp'){initMapIfNeeded();loadCheckinsForDate();}
@@ -1589,13 +1621,31 @@ const RC_STATUS_STYLE = {
   'tracking':    {label:'✅ Договорились',     cls:'up'},
 };
 
+let _rcData = null;
+function calcRcTotals(rows){
+  const t = {given:rows.length, agreed:0, declined:0, pending:0, in_progress:0, no_answer:0, tracking:0, revived:0};
+  rows.forEach(r=>{
+    if(r.status==='tp_agreed') t.agreed++;
+    else if(r.status==='tp_declined') t.declined++;
+    else if(r.status==='pending_tp') t.pending++;
+    else if(r.status==='in_progress') t.in_progress++;
+    else if(r.status==='no_answer') t.no_answer++;
+    else if(r.status==='tracking'){ t.tracking++; if(r.revived) t.revived++; }
+  });
+  return t;
+}
+function renderReactivationFromCache(){
+  if(!_rcData) return;
+  const rows = (_rcData.rows||[]).filter(r=>myTpMatchClean(r.tp));
+  renderReactivationSummary(MY_TP ? calcRcTotals(rows) : _rcData.total);
+  renderReactivationTable(rows);
+}
 async function loadReactivation(){
   if (!BOT_URL) { toast('⚠️ Бот не настроен'); return; }
   try {
     const r = await fetch(`${BOT_URL}/reactivation-stats`);
-    const data = await r.json();
-    renderReactivationSummary(data.total);
-    renderReactivationTable(data.rows);
+    _rcData = await r.json();
+    renderReactivationFromCache();
   } catch(e) {
     toast('❌ Не удалось загрузить статистику: ' + e.message);
   }
@@ -1619,7 +1669,7 @@ function renderReactivationSummary(t){
 
 function renderReactivationTable(rows){
   const tbl = document.getElementById('rc-tbl');
-  if (!rows || !rows.length) { tbl.innerHTML = '<tr><td colspan="5"><div class="empty-state"><img class="mascot-inline" src="assets/mascot/mascot-calm.png" alt=""><span>Пока никого не передавали на отработку</span></div></td></tr>'; return; }
+  if (!rows || !rows.length) { tbl.innerHTML = '<tr><td colspan="5"><div class="empty-state"><img class="mascot-inline" src="assets/mascot/mascot-calm.png" alt=""><span>' + (MY_TP ? 'У этого торгового пока нет партнёров на отработке' : 'Пока никого не передавали на отработку') + '</span></div></td></tr>'; return; }
   tbl.innerHTML = rows.map(row => {
     const st = RC_STATUS_STYLE[row.status] || {label: row.status_label, cls: ''};
     const revivedCell = row.tracked ? (row.revived ? '<span class="up">🎉 Ожил</span>' : '<span class="dn">Пока нет</span>') : '<span style="color:var(--text3)">—</span>';

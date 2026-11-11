@@ -388,7 +388,7 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
     <div class="ct"><span class="dot"></span>Активные 3+ месяца по торговым <span id="a3-tp-lbl" style="font-size:10px;color:var(--text3);text-transform:none;font-weight:400;margin-left:4px"></span></div>
     <div id="a3-tp-note" style="font-size:11.5px;color:var(--text3);margin-bottom:8px;line-height:1.5"></div>
     <table>
-      <thead><tr><th>#</th><th>Торговый</th><th>Активные 3м+</th><th>Пред. мес.</th><th>Старый «3+ продаж»</th><th>Тренд</th></tr></thead>
+      <thead><tr><th>#</th><th>Торговый</th><th>Активные 3м+</th><th>3 мес. подряд</th><th>Авансом</th><th>Пред. мес.</th><th>Старый «3+ продаж»</th><th>Тренд</th></tr></thead>
       <tbody id="a3-tp-tbl"></tbody>
     </table>
   </div>
@@ -989,15 +989,19 @@ function a3Compute(m, rtMap){
   const pk = calPrevKey(m);
   if(m < A3_START || pk < A3_START || !DB.months[m] || !DB.months[pk]) return null;
   const cur = a3MonthMap(m, rtMap), prev = a3MonthMap(pk, rtMap);
-  const keys = new Set(), byTp = {};
+  // позапрошлый месяц нужен только для разбивки: «3 месяца подряд» (чистые) и «авансом» (только 2 подряд)
+  const pk2 = calPrevKey(pk);
+  const prev2 = DB.months[pk2] ? a3MonthMap(pk2, rtMap) : null;
+  const keys = new Set(), adv = new Set(), byTp = {}, advByTp = {};
   cur.forEach((e,k)=>{
     if(prev.has(k)){
       keys.add(k);
       const tp = Object.keys(e.tp).sort((a,b)=>e.tp[b]-e.tp[a])[0];
       byTp[tp] = (byTp[tp]||0) + 1;
+      if(prev2 && !prev2.has(k)){ adv.add(k); advByTp[tp] = (advByTp[tp]||0) + 1; }
     }
   });
-  return {keys, byTp, total: keys.size, active: cur.size};
+  return {keys, byTp, total: keys.size, active: cur.size, split: !!prev2, adv, advByTp, advTotal: adv.size, pk2};
 }
 function a3IsOpenMonth(m){
   const n = moscowNow();
@@ -1020,6 +1024,7 @@ function renderActive3(d){
       const diff = A3_CUR.total - prevRes.total;
       sub = `<span class="${diff>=0?'up':'dn'}">${diff>=0?'↑':'↓'}${Math.abs(diff)}</span> vs ${prevRes.total} в ${fmtM(pk)}`;
     } else sub = `активных в месяце: ${A3_CUR.active}`;
+    if(A3_CUR && A3_CUR.split) sub += `<br>3 мес. подряд: ${A3_CUR.total-A3_CUR.advTotal} · авансом: ${A3_CUR.advTotal}`;
     if(open && A3_CUR) sub += '<br>месяц не закончен — цифра растёт';
     const a3Html = `<div class="kc hero" title="Партнёр активен в этом и в прошлом месяце (без фрода). Новые и ожившие, у кого 2 месяца подряд, считаются авансом."><div class="kl">Активных партнёров 3м+</div><div class="kv" style="color:var(--mint)">${val}</div><div class="ks">${sub}</div></div>`;
     // ставим сразу после карточки «Активных партнёров»; если не нашли — в конец
@@ -1038,11 +1043,12 @@ function renderActive3(d){
     tbl.innerHTML = '';
     return;
   }
-  note.innerHTML = 'Партнёр засчитывается, если продавал и в этом, и в прошлом месяце (фрод не считаем). Новые и ожившие с 2 месяцами подряд — тоже в зачёте.'
+  note.innerHTML = 'Партнёр засчитывается, если продавал и в этом, и в прошлом месяце (фрод не считаем). «3 мес. подряд» — продавал ещё и месяцем раньше; «Авансом» — новые и ожившие, у кого пока 2 месяца подряд.'
+    + (A3_CUR.split ? '' : ` Разбивку не посчитать: нет данных за ${fmtM(A3_CUR.pk2)}.`)
     + (open ? ' <b style="color:var(--amber)">Месяц не закончен — цифры будут расти.</b>' : '');
   const names = new Set([...d.tp.map(t=>t.name), ...Object.keys(A3_CUR.byTp)]);
   const oldMap = {}; d.tp.forEach(t=>oldMap[t.name]=t.p3);
-  const rows = [...names].map(n=>({n, v:A3_CUR.byTp[n]||0, pv:prevRes?(prevRes.byTp[n]||0):null, old:oldMap[n]??0}))
+  const rows = [...names].map(n=>({n, v:A3_CUR.byTp[n]||0, adv:A3_CUR.advByTp[n]||0, pv:prevRes?(prevRes.byTp[n]||0):null, old:oldMap[n]??0}))
     .filter(r=>r.v>0||r.old>0).sort((a,b)=>b.v-a.v);
   const tot = rows.reduce((s,r)=>s+r.v,0);
   tbl.innerHTML = rows.map((r,i)=>{
@@ -1053,13 +1059,19 @@ function renderActive3(d){
       <td><span class="rn ${rn}">${i+1}</span></td>
       <td style="color:var(--text);font-weight:500">${escHtml(r.n)}</td>
       <td><b style="color:var(--mint)">${r.v}</b></td>
+      <td>${A3_CUR.split?(r.v-r.adv):'—'}</td>
+      <td style="color:var(--amber)">${A3_CUR.split?r.adv:'—'}</td>
       <td style="color:var(--text3)">${r.pv===null?'—':r.pv}</td>
       <td style="color:var(--text2)">${r.old}</td>
       <td>${tr}</td></tr>`;
-  }).join('') + `<tr><td></td><td style="color:var(--text);font-weight:600">Итого</td><td><b style="color:var(--mint)">${tot}</b></td><td style="color:var(--text3)">${prevRes?Object.values(prevRes.byTp).reduce((a,b)=>a+b,0):'—'}</td><td></td><td></td></tr>`;
+  }).join('') + `<tr><td></td><td style="color:var(--text);font-weight:600">Итого</td><td><b style="color:var(--mint)">${tot}</b></td><td>${A3_CUR.split?(tot-A3_CUR.advTotal):'—'}</td><td style="color:var(--amber)">${A3_CUR.split?A3_CUR.advTotal:'—'}</td><td style="color:var(--text3)">${prevRes?Object.values(prevRes.byTp).reduce((a,b)=>a+b,0):'—'}</td><td></td><td></td></tr>`;
 }
 function markA3(list){
-  list.forEach(p=>{ p.a3 = A3_CUR ? A3_CUR.keys.has(a3Key(p, A3_RT)) : null; });
+  list.forEach(p=>{
+    const k = a3Key(p, A3_RT);
+    p.a3 = A3_CUR ? A3_CUR.keys.has(k) : null;
+    p.a3adv = A3_CUR ? (A3_CUR.split && A3_CUR.adv.has(k)) : false;
+  });
   const el = document.getElementById('s-a3');
   if(el) el.textContent = A3_CUR ? A3_CUR.total : '—';
 }
@@ -1408,7 +1420,7 @@ function renderPRTable(all,filter){
       <td>${p.fraud>0?`<span class="bdg ${p.fraud_pct>30?'br2':p.fraud_pct>10?'ba2':'bg2'}">${p.fraud_pct}%</span>`:'—'}</td>
       <td>${tr}</td>
       <td>${seg}</td>
-      <td>${p.a3===null||p.a3===undefined?'—':p.a3?'<span class="bdg bg2">✓</span>':''}</td>
+      <td>${p.a3===null||p.a3===undefined?'—':p.a3?(p.a3adv?'<span class="bdg ba2" title="Новый или ожил: 2 месяца подряд — засчитан авансом">аванс</span>':'<span class="bdg bg2" title="Продаёт 3 месяца подряд">✓</span>'):''}</td>
     </tr>`;
   }).join('');
 }

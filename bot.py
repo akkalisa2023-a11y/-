@@ -2175,6 +2175,8 @@ def build_report(data, month_label, is_final=False):
         if not is_final:
             a3_line += " — месяц не закончен, цифра растёт"
         lines.append(a3_line)
+        if a3.get("split"):
+            lines.append(f"     из них 3 мес. подряд: <b>{a3['total'] - a3['adv']}</b> · авансом (новые и ожившие, 2 мес.): <b>{a3['adv']}</b>")
 
     fw = fraud_warning(fraud_pct)
     if fw:
@@ -2627,13 +2629,19 @@ def compute_a3(db, mk):
         return None
     rtmap = _a3_rt_map(db)
     cur, prev = _a3_month_map(db, mk, rtmap), _a3_month_map(db, pk, rtmap)
-    by_tp, total = {}, 0
+    # позапрошлый месяц — для разбивки: «3 мес. подряд» и «авансом» (только 2 подряд)
+    pk2 = _shift_month(pk, -1)
+    prev2 = _a3_month_map(db, pk2, rtmap) if pk2 in months else None
+    by_tp, adv_by_tp, total, adv = {}, {}, 0, 0
     for k, e in cur.items():
         if k in prev:
             tp = max(e["tp"], key=lambda t: e["tp"][t])
             by_tp[tp] = by_tp.get(tp, 0) + 1
             total += 1
-    return {"total": total, "byTp": by_tp}
+            if prev2 is not None and k not in prev2:
+                adv_by_tp[tp] = adv_by_tp.get(tp, 0) + 1
+                adv += 1
+    return {"total": total, "byTp": by_tp, "split": prev2 is not None, "adv": adv, "advByTp": adv_by_tp}
 
 def calc_efficiency(d, privl, a3=None):
     """Рейтинг эффективности — те же веса, что в дашборде. 25% веса — «активные
@@ -3420,7 +3428,8 @@ def send_report():
             "current":    months[cur_key],
             "prev":       months[prev_key] if prev_key else None,
             "efficiency": eff[:5],
-            "a3": ({"total": a3_cur["total"], "prev_total": a3_prev["total"] if a3_prev else None}
+            "a3": ({"total": a3_cur["total"], "prev_total": a3_prev["total"] if a3_prev else None,
+                    "split": a3_cur["split"], "adv": a3_cur["adv"]}
                    if a3_cur else None)
         }
         text   = build_report(data, month_label, is_final=is_final_month)

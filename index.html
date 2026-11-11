@@ -469,6 +469,16 @@ div[class*="balloon__close-button"]{filter:invert(1) opacity(.7)}
         <tbody id="privl-tbl"></tbody>
       </table>
     </div>
+    <div class="card full">
+      <div class="ct"><span class="dot"></span>Воронка новых партнёров <span id="funnel-lbl" style="font-size:10px;color:var(--text3);text-transform:none;font-weight:400;margin-left:4px"></span></div>
+      <div id="funnel-note" style="font-size:11.5px;color:var(--text3);margin-bottom:10px;line-height:1.5"></div>
+      <div id="funnel-sum" class="kgrid"></div>
+      <table id="funnel-wrap" style="display:none">
+        <thead><tr><th>#</th><th>Торговый</th><th>Привлечено</th><th>Первая активация</th><th>%</th><th>3+ продаж</th><th>% от привл.</th></tr></thead>
+        <tbody id="funnel-tbl"></tbody>
+      </table>
+      <details id="funnel-miss" style="display:none;margin-top:10px"><summary style="cursor:pointer;font-size:12px;color:var(--text2)">Без активаций (для проверки совпадения имён)</summary><div id="funnel-miss-list" style="font-size:11.5px;color:var(--text3);margin-top:6px;line-height:1.6"></div></details>
+    </div>
   </div>
 </div>
 
@@ -633,6 +643,7 @@ let DB = initStorage();
 let cur = Object.keys(DB.months).sort().reverse()[0];
 let opsC=null, mainC=null, privlC=null;
 let prAllCache=[];
+let PRIVL_SEL=null;
 // Фильтр «Мои партнёры»: выбранный торговый (пусто = все). Запоминается в браузере.
 let MY_TP = localStorage.getItem('as_my_tp') || '';
 function myTpMatch(name){ return !MY_TP || normName(name)===normName(MY_TP); }
@@ -890,6 +901,17 @@ function processPrivl(headers,rows){
     }
   });
 
+  // Когорты новых партнёров для воронки: кто привлечён в месяце (U — торговый, AA — имя нового)
+  const cohorts={};
+  rows.forEach(r=>{
+    const tp=String(r[iTP]||'').trim(), nm=String(r[iNewName]||'').trim();
+    const m = iD>=0 ? excelToMonth(r[iD]) : null;
+    if(!tp||!nm||!m) return;
+    const key=normName(nm).replace(/ё/g,'е');
+    if(!cohorts[m]) cohorts[m]={};
+    if(!cohorts[m][key]) cohorts[m][key]={n:nm,t:tp,s:normName(String(r[iDirectCreator]||''))!==normName(tp)?1:0};
+  });
+
   const stored=JSON.parse(localStorage.getItem('as_dash_v4'));
   if(!stored.privl_months) stored.privl_months={};
 
@@ -903,6 +925,7 @@ function processPrivl(headers,rows){
       s: privl.reduce((s,x)=>s+x.s,0)
     };
     stored.privl_months[m]={privl, tot};
+    if(cohorts[m]) stored.privl_months[m].cohort=Object.values(cohorts[m]);
     updatedMonths.push(m);
   });
 
@@ -944,6 +967,7 @@ function selectMonth(m){
   if(document.getElementById('tat').style.display!=='none'){
     const stored=JSON.parse(localStorage.getItem('as_dash_v4')||'{}');
     const pm = DB.privl_months?.[m] || stored.privl_months?.[m];
+    PRIVL_SEL=m;
     if(pm){ DB.privl=pm.privl; DB.privl_total=pm.tot; renderPrivl(); }
     // Подсвечиваем нужную кнопку в privl-month-btns
     document.querySelectorAll('#privl-month-btns .mbtn').forEach(b=>{
@@ -1463,12 +1487,14 @@ function renderPrivlMonthBtns(){
   const el=document.getElementById('privl-month-btns');
   if(!el) return;
   if(!months.length){ el.innerHTML=''; return; }
+  PRIVL_SEL = months.includes(cur) ? cur : months[0];
   el.innerHTML=months.map((m,i)=>
     `<button class="mbtn${m===cur?' on':''}" onclick="selectPrivlMonth('${m}',this)">${fmtM(m)}</button>`
   ).join('');
 }
 
 function selectPrivlMonth(m, el){
+  PRIVL_SEL=m;
   document.querySelectorAll('#privl-month-btns .mbtn').forEach(b=>b.classList.remove('on'));
   el.classList.add('on');
   const stored=JSON.parse(localStorage.getItem('as_dash_v4')||'{}');
@@ -1515,6 +1541,72 @@ function renderPrivl(){
       <td><span class="bdg ${cl}">${pct}%</span></td>
     </tr>`;
   }).join('');
+  renderFunnel();
+}
+
+// ─── ВОРОНКА НОВЫХ ПАРТНЁРОВ: привлечён → первая активация → 3+ продаж ───
+// Когорта = партнёры, созданные в выбранном месяце. «Первая активация» — хотя бы 1 активация
+// без фрода в этом или следующих месяцах. «3+» — в каком-то одном месяце 3 и больше (без фрода).
+// Партнёр ищется по имени (ФИО из отчёта привлечения = «Ритейл» в отчёте активаций).
+function funnelKey(s){ return normName(s).replace(/ё/g,'е'); }
+function computeFunnel(m){
+  const pm = (DB.privl_months||{})[m];
+  if(!pm || !pm.cohort || !pm.cohort.length) return null;
+  const sales = {}; // имя -> {месяц: акты без фрода}
+  Object.keys(DB.months).forEach(mk=>{
+    if(mk < m) return;
+    (DB.months[mk].partners||[]).forEach(p=>{
+      const nf=(p.acts||0)-(p.fraud||0); if(nf<=0) return;
+      const k=funnelKey(p.r);
+      if(!sales[k]) sales[k]={};
+      sales[k][mk]=(sales[k][mk]||0)+nf;
+    });
+  });
+  const byTp={}, miss=[];
+  const tot={n:0,a:0,t:0};
+  pm.cohort.forEach(c=>{
+    const sm=sales[funnelKey(c.n)];
+    const vals=sm?Object.values(sm):[];
+    const hasAct=vals.length>0, has3=vals.some(v=>v>=3);
+    const tp=dispName(c.t);
+    const r=byTp[tp]||(byTp[tp]={n:0,a:0,t:0});
+    r.n++; tot.n++;
+    if(hasAct){ r.a++; tot.a++; } else miss.push(c.n+' ('+tp+')');
+    if(has3){ r.t++; tot.t++; }
+  });
+  return {tot, byTp, miss};
+}
+function renderFunnel(){
+  const lbl=document.getElementById('funnel-lbl'); if(!lbl) return;
+  const note=document.getElementById('funnel-note'), sum=document.getElementById('funnel-sum');
+  const wrap=document.getElementById('funnel-wrap'), miss=document.getElementById('funnel-miss');
+  const m=PRIVL_SEL;
+  lbl.textContent = m ? fmtM(m) : '';
+  wrap.style.display='none'; miss.style.display='none'; sum.innerHTML='';
+  const f = m ? computeFunnel(m) : null;
+  if(!f){
+    note.textContent='Для этого месяца нет списка новых партнёров. Загрузи отчёт привлечения (＋ Привлечение) ещё раз — список сохранится.';
+    return;
+  }
+  const pc=(a,b)=>b?Math.round(a/b*100):0;
+  note.innerHTML='Партнёры, привлечённые в этом месяце. «Первая активация» — продал хотя бы раз (без фрода) в этом или следующих месяцах; «3+» — в каком-то месяце 3 и больше. Ищем по ФИО, поэтому если цифры кажутся заниженными — посмотри список «Без активаций» ниже.'
+    + (a3IsOpenMonth(m)?' <b style="color:var(--amber)">Месяц не закончен — цифры будут расти.</b>':'');
+  const t=f.tot;
+  sum.innerHTML=`
+    <div class="kc"><div class="kl">Привлечено</div><div class="kv">${t.n}</div><div class="ks">&nbsp;</div></div>
+    <div class="kc hero"><div class="kl">Сделали первую активацию</div><div class="kv" style="color:var(--mint)">${t.a}</div><div class="ks">${pc(t.a,t.n)}% от привлечённых</div></div>
+    <div class="kc hero"><div class="kl">Дошли до 3+ продаж</div><div class="kv" style="color:var(--mint)">${t.t}</div><div class="ks">${pc(t.t,t.n)}% от привлечённых · ${pc(t.t,t.a)}% от активных</div></div>`;
+  const rows=Object.entries(f.byTp).sort((a,b)=>b[1].n-a[1].n);
+  document.getElementById('funnel-tbl').innerHTML=rows.map(([n,r],i)=>`<tr>
+    <td style="color:var(--text3)">${i+1}</td><td style="color:var(--text);font-weight:500">${escHtml(n)}</td>
+    <td><b>${r.n}</b></td><td style="color:var(--mint)">${r.a}</td>
+    <td><span class="bdg ${pc(r.a,r.n)>=50?'bg2':pc(r.a,r.n)>=25?'ba2':'br2'}">${pc(r.a,r.n)}%</span></td>
+    <td style="color:var(--mint)">${r.t}</td><td>${pc(r.t,r.n)}%</td></tr>`).join('');
+  wrap.style.display='';
+  if(f.miss.length){
+    document.getElementById('funnel-miss-list').innerHTML=f.miss.slice(0,300).map(escHtml).join('<br>')+(f.miss.length>300?`<br>… и ещё ${f.miss.length-300}`:'');
+    miss.style.display='';
+  }
 }
 
 // ─── EFFICIENCY ────────────────────────────────────────────────

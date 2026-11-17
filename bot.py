@@ -1595,11 +1595,15 @@ def handle_sleeping_upload(msg, user_id):
         if not isinstance(items, list) or not items:
             send_message("В файле нет списка партнёров — проверь, что это sleeping_list.json.", chat_id=user_id)
             return
-        clean = []
+        by_rt = {}
         for it in items:
             if isinstance(it, dict) and it.get("r") and it.get("n"):
                 it["r"] = str(it["r"]).strip().upper()
-                clean.append(it)
+                old = by_rt.get(it["r"])
+                if old is None or (not old.get("ph") and it.get("ph")):
+                    by_rt[it["r"]] = it  # при повторе оставляем запись с телефоном
+        clean = list(by_rt.values())
+        dup_removed = sum(1 for it in items if isinstance(it, dict) and it.get("r") and it.get("n")) - len(clean)
         if not clean:
             send_message("Не нашёл ни одного партнёра с RT-кодом и ФИО.", chat_id=user_id)
             return
@@ -1608,6 +1612,8 @@ def handle_sleeping_upload(msg, user_id):
         queue = batch_queue(db, clean)
         no_phone = sum(1 for it in clean if not it.get("ph"))
         note = f"\n⚠️ Без телефона: {no_phone}." if no_phone else ""
+        if dup_removed:
+            note += f"\n🧹 Убрал повторы по RT: {dup_removed}."
         send_message(
             f"✅ Список загружен: {len(clean)} партнёров, из них ещё не выдано {len(queue)}.{note}\n"
             f"Раздать на сегодня: /batch (или /batch 30 — другое количество).",
@@ -1621,7 +1627,13 @@ def batch_queue(db, items):
     """Очередь: все, кого ещё не выдавали (по RT-коду, любой статус в
     реактивации), по приоритету от большего к меньшему."""
     used = {str(r.get("rt_code", "")).strip().upper() for r in db.get("reactivation", {}).values() if r.get("rt_code")}
-    queue = [it for it in items if it["r"] not in used]
+    queue, seen = [], set()
+    for it in items:
+        rt = it["r"]
+        if rt in used or rt in seen:
+            continue  # уже выдавали или повтор этого RT в самом списке
+        seen.add(rt)
+        queue.append(it)
     queue.sort(key=lambda x: -(x.get("p") or 0))
     return queue
 
@@ -3524,7 +3536,8 @@ def dedupe_reactivation():
     priority = {"tracking": 5, "tp_agreed": 4, "in_progress": 3, "no_answer": 2, "pending_tp": 1, "tp_declined": 0}
     groups = {}
     for rid, req in reactivation.items():
-        key = req.get("partner", "").strip().lower()
+        rt = str(req.get("rt_code") or "").strip().upper()
+        key = ("rt:" + rt) if rt else ("n:" + norm_name(req.get("partner", "")))
         groups.setdefault(key, []).append((rid, req))
 
     removed = 0

@@ -1134,6 +1134,29 @@ def _month_index(db, mk):
             counts[i] = counts.get(i, 0) + n
     return entries, counts
 
+def _send_sections(chat_id, head, sections):
+    """Одно сообщение: шапка + несколько секций (подзаголовок + список).
+    Если не влезает в лимит Telegram, режем и повторяем подзаголовок секции."""
+    msgs, cur = [], head
+    for sub, lines in sections:
+        started = False
+        for ln in lines:
+            add = ("\n\n" + sub if not started else "") + "\n" + ln
+            if cur != head and len(cur) + len(add) > 3500:
+                msgs.append(cur)
+                cur = head
+                add = "\n\n" + sub + "\n" + ln
+            cur += add
+            started = True
+    if cur != head:
+        msgs.append(cur)
+    ok = True
+    for m in msgs:
+        res = send_message(m, chat_id=chat_id)
+        if not res.get("ok"):
+            ok = False
+    return ok
+
 def reconcile_partner_trends(db, cur_key, prev_key):
     """Недельная часть: «ушли в ноль» и «просели». Считаем без фрода, как и
     «активные 3м+» в дашборде. «Ушёл в ноль» — в прошлом месяце продавал,
@@ -1154,6 +1177,8 @@ def reconcile_partner_trends(db, cur_key, prev_key):
 
     ent_prev, cnt_prev = _month_index(db, prev_key)
     ent_cur, cnt_cur = _month_index(db, cur_key)
+    m2 = _shift_month(prev_key, -1)
+    cnt_prev2 = _month_index(db, m2)[1] if m2 in db["months"] else None  # для разбивки «2 месяца подряд / только прошлый»
     cur_tp = {}
     for e in ent_cur.values():
         for i in e["ids"]:
@@ -1168,7 +1193,8 @@ def reconcile_partner_trends(db, cur_key, prev_key):
         tp_name = next((cur_tp[i] for i in e["ids"] if cur_tp.get(i)), None) or e["tp"]
         bucket = by_tp.setdefault(tp_name, {"zero": [], "decline": []})
         if n_cur <= 0:
-            bucket["zero"].append((e["name"], n_prev))
+            n_prev2 = max((cnt_prev2.get(i, 0) for i in e["ids"]), default=0) if cnt_prev2 is not None else None
+            bucket["zero"].append((e["name"], n_prev, n_prev2))
         else:
             fc = forecast_for(n_cur)
             if fc < n_prev:
@@ -1182,8 +1208,17 @@ def reconcile_partner_trends(db, cur_key, prev_key):
             day_txt = f", по темпу на {int(last_date.split('-')[2])}-е число"
         except Exception:
             day_txt = ""
-    head_zero = ("🔴 <b>Ушли в ноль</b> — в прошлом месяце продавали, в этом пока ни одной активации. "
-                 "Чтобы остаться в «активных 3м+», им надо продать в этом месяце:")
+    y, mo = (int(x) for x in cur_key.split("-"))
+    left = calendar.monthrange(y, mo)[1] - now_msk().day
+    L1, L2, Lc = _month_label(prev_key), _month_label(m2), _month_label(cur_key)
+    head_zero_plain = ("🔴 <b>Ушли в ноль</b> — в прошлом месяце продавали, в этом пока ни одной активации. "
+                       "Чтобы остаться в «активных 3м+», им надо продать в этом месяце:")
+    head_zero = (f"🔴 <b>Ушли в ноль</b> — в {L1} продавали, а в этом месяце пока ни одной активации "
+                 f"(до конца месяца осталось {left} дн.).")
+    sub_both = (f"⚠️ <b>Продавали 2 месяца подряд</b> ({L2} и {L1}) — они уже в «активных 3м+». "
+                f"Не продадут в этом месяце — выпадут, надо удержать:")
+    sub_only = (f"🆕 <b>Новые и ожившие</b> (продавали только в {L1}) — могут попасть в «активные 3м+» "
+                f"(авансом), если продадут в этом месяце:")
     head_decl = f"🟡 <b>Просели</b> — прогноз на месяц ниже прошлого на 20% и больше{day_txt}:"
 
     for tp_name, bucket in by_tp.items():
@@ -1191,8 +1226,14 @@ def reconcile_partner_trends(db, cur_key, prev_key):
         if not contact:
             continue
         if bucket["zero"]:
-            lines = [f"• {_esc(n)} — было {prev}" for n, prev in sorted(bucket["zero"], key=lambda x: -x[1])]
-            _send_chunked(contact["id"], head_zero, lines)
+            zs = sorted(bucket["zero"], key=lambda x: -x[1])
+            if cnt_prev2 is None:
+                lines = [f"• {_esc(n)} — было {p1}" for n, p1, _ in zs]
+                _send_chunked(contact["id"], head_zero_plain, lines)
+            else:
+                both = [f"• {_esc(n)} — {L2}: {p2}, {L1}: {p1}" for n, p1, p2 in zs if p2 and p2 > 0]
+                only = [f"• {_esc(n)} — {L1}: {p1}" for n, p1, p2 in zs if not p2 or p2 <= 0]
+                _send_sections(contact["id"], head_zero, [(sub_both, both), (sub_only, only)])
         if bucket["decline"]:
             lines = [f"• {_esc(n)} — прогноз {fc} против {prev} (−{pct}%)"
                      for n, prev, fc, pct in sorted(bucket["decline"], key=lambda x: -x[3])]
@@ -1595,15 +1636,11 @@ def handle_sleeping_upload(msg, user_id):
         if not isinstance(items, list) or not items:
             send_message("В файле нет списка партнёров — проверь, что это sleeping_list.json.", chat_id=user_id)
             return
-        by_rt = {}
+        clean = []
         for it in items:
             if isinstance(it, dict) and it.get("r") and it.get("n"):
                 it["r"] = str(it["r"]).strip().upper()
-                old = by_rt.get(it["r"])
-                if old is None or (not old.get("ph") and it.get("ph")):
-                    by_rt[it["r"]] = it  # при повторе оставляем запись с телефоном
-        clean = list(by_rt.values())
-        dup_removed = sum(1 for it in items if isinstance(it, dict) and it.get("r") and it.get("n")) - len(clean)
+                clean.append(it)
         if not clean:
             send_message("Не нашёл ни одного партнёра с RT-кодом и ФИО.", chat_id=user_id)
             return
@@ -1612,8 +1649,6 @@ def handle_sleeping_upload(msg, user_id):
         queue = batch_queue(db, clean)
         no_phone = sum(1 for it in clean if not it.get("ph"))
         note = f"\n⚠️ Без телефона: {no_phone}." if no_phone else ""
-        if dup_removed:
-            note += f"\n🧹 Убрал повторы по RT: {dup_removed}."
         send_message(
             f"✅ Список загружен: {len(clean)} партнёров, из них ещё не выдано {len(queue)}.{note}\n"
             f"Раздать на сегодня: /batch (или /batch 30 — другое количество).",
@@ -1627,13 +1662,7 @@ def batch_queue(db, items):
     """Очередь: все, кого ещё не выдавали (по RT-коду, любой статус в
     реактивации), по приоритету от большего к меньшему."""
     used = {str(r.get("rt_code", "")).strip().upper() for r in db.get("reactivation", {}).values() if r.get("rt_code")}
-    queue, seen = [], set()
-    for it in items:
-        rt = it["r"]
-        if rt in used or rt in seen:
-            continue  # уже выдавали или повтор этого RT в самом списке
-        seen.add(rt)
-        queue.append(it)
+    queue = [it for it in items if it["r"] not in used]
     queue.sort(key=lambda x: -(x.get("p") or 0))
     return queue
 
@@ -3536,8 +3565,7 @@ def dedupe_reactivation():
     priority = {"tracking": 5, "tp_agreed": 4, "in_progress": 3, "no_answer": 2, "pending_tp": 1, "tp_declined": 0}
     groups = {}
     for rid, req in reactivation.items():
-        rt = str(req.get("rt_code") or "").strip().upper()
-        key = ("rt:" + rt) if rt else ("n:" + norm_name(req.get("partner", "")))
+        key = req.get("partner", "").strip().lower()
         groups.setdefault(key, []).append((rid, req))
 
     removed = 0

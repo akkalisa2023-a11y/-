@@ -1080,20 +1080,29 @@ def _shift_month(key, delta):
 def _month_label(key):
     return MONTH_SHORT[int(key.split("-")[1])]
 
-def _tp_contact_for(db, tp_name):
-    """Контакт торгового в боте. None — если не зарегистрирован, уволен или в отпуске."""
+def _tp_contact_info(db, tp_name):
+    """(контакт, причина). Контакт None — если не зарегистрирован, уволен или в отпуске;
+    причина говорит, что именно."""
     if not tp_name:
-        return None
+        return None, "нет торгового"
     contacts = db.get("tp_contacts", {})
     tp_by_norm = {norm_name(n): n for n in get_all_tp_names(db, include_inactive=True)}
     canonical = tp_by_norm.get(norm_name(tp_name), tp_name)
-    if canonical in set(db.get("inactive_tp", [])) or is_on_vacation(db, canonical):
-        return None
+    if canonical in set(db.get("inactive_tp", [])):
+        return None, "уволен"
+    if is_on_vacation(db, canonical):
+        return None, "в отпуске"
     contact = contacts.get(canonical)
     if not contact:
         matched = match_tp_name(canonical, contacts.keys())
         contact = contacts.get(matched) if matched else None
-    return contact if (contact and contact.get("id")) else None
+    if contact and contact.get("id"):
+        return contact, None
+    return None, "не зарегистрирован в боте"
+
+def _tp_contact_for(db, tp_name):
+    """Контакт торгового в боте. None — если не зарегистрирован, уволен или в отпуске."""
+    return _tp_contact_info(db, tp_name)[0]
 
 def _send_chunked(chat_id, head, lines):
     """Шапка + список; длинный список режем на несколько сообщений (лимит Telegram)."""
@@ -1157,7 +1166,7 @@ def _send_sections(chat_id, head, sections):
             ok = False
     return ok
 
-def reconcile_partner_trends(db, cur_key, prev_key):
+def reconcile_partner_trends(db, cur_key, prev_key, preview_chat=None):
     """Недельная часть: «ушли в ноль» и «просели». Считаем без фрода, как и
     «активные 3м+» в дашборде. «Ушёл в ноль» — в прошлом месяце продавал,
     в этом 0 или нет в отчёте (ровно те, кто может выпасть из 3м+).
@@ -1221,23 +1230,35 @@ def reconcile_partner_trends(db, cur_key, prev_key):
                 f"(авансом), если продадут в этом месяце:")
     head_decl = f"🟡 <b>Просели</b> — прогноз на месяц ниже прошлого на 20% и больше{day_txt}:"
 
+    stats = {"sent": {}, "skipped": {}}
     for tp_name, bucket in by_tp.items():
-        contact = _tp_contact_for(db, tp_name)
-        if not contact:
+        disp = clean_tp_name(tp_name) if tp_name else "без торгового"
+        n_zero, n_decl = len(bucket["zero"]), len(bucket["decline"])
+        if not (n_zero or n_decl):
             continue
+        contact, reason = _tp_contact_info(db, tp_name)
+        if preview_chat:
+            target, pre = preview_chat, f"👤 <i>для: {_esc(disp)}</i>\n\n"
+        elif contact:
+            target, pre = contact["id"], ""
+        else:
+            stats["skipped"][disp] = (reason, n_zero, n_decl)
+            continue
+        stats["sent"][disp] = (n_zero, n_decl)
         if bucket["zero"]:
             zs = sorted(bucket["zero"], key=lambda x: -x[1])
             if cnt_prev2 is None:
                 lines = [f"• {_esc(n)} — было {p1}" for n, p1, _ in zs]
-                _send_chunked(contact["id"], head_zero_plain, lines)
+                _send_chunked(target, pre + head_zero_plain, lines)
             else:
                 both = [f"• {_esc(n)} — {L2}: {p2}, {L1}: {p1}" for n, p1, p2 in zs if p2 and p2 > 0]
                 only = [f"• {_esc(n)} — {L1}: {p1}" for n, p1, p2 in zs if not p2 or p2 <= 0]
-                _send_sections(contact["id"], head_zero, [(sub_both, both), (sub_only, only)])
+                _send_sections(target, pre + head_zero, [(sub_both, both), (sub_only, only)])
         if bucket["decline"]:
             lines = [f"• {_esc(n)} — прогноз {fc} против {prev} (−{pct}%)"
                      for n, prev, fc, pct in sorted(bucket["decline"], key=lambda x: -x[3])]
-            _send_chunked(contact["id"], head_decl, lines)
+            _send_chunked(target, pre + head_decl, lines)
+    return stats
 
 def weekly_partner_digest():
     """Каждый понедельник: «ушли в ноль» + «просели».
@@ -1262,10 +1283,77 @@ def weekly_partner_digest():
             return
         prev_key = _shift_month(cur_key, -1)
         if int(last_date.split("-")[2]) >= 7 and prev_key in months:
-            reconcile_partner_trends(db, cur_key, prev_key)
+            stats = reconcile_partner_trends(db, cur_key, prev_key)
+            note = _digest_unreached_text(stats)
+            if note:
+                send_message(note, chat_id=OWNER_ID)
         logging.info("Weekly partner digest sent")
     except Exception as e:
         logging.error(f"weekly_partner_digest error: {e}")
+
+def _digest_unreached_text(stats):
+    """Кому из торговых сводка не дошла (и почему) — чтобы владелец мог передать сам."""
+    from html import escape as _esc
+    if not stats or not stats.get("skipped"):
+        return None
+    lines = ["⚠️ <b>Не получили сводку</b> (бот не смог им написать, передай сам):"]
+    for name, (reason, nz, nd) in stats["skipped"].items():
+        parts = []
+        if nz:
+            parts.append(f"🔴 {nz}")
+        if nd:
+            parts.append(f"🟡 {nd}")
+        lines.append(f"• {_esc(name)} — {reason} ({' · '.join(parts)})")
+    return "\n".join(lines)
+
+def run_digest_now(owner_chat, preview=False):
+    """/digest — сводка «ушли в ноль» и «просели» прямо сейчас, по запросу
+    владельца. /digest me — предпросмотр: все сообщения приходят только владельцу,
+    торговым ничего не уходит."""
+    try:
+        db = load_db()
+        months = db.get("months", {})
+        now = now_msk()
+        cur_key = f"{now.year}-{now.month:02d}"
+        last_date = (months.get(cur_key) or {}).get("last_date")
+        if not last_date:
+            send_message("⚠️ Нет данных за этот месяц — залей свежий отчёт активаций и повтори /digest.", chat_id=owner_chat)
+            return
+        try:
+            age = (now.date() - datetime.strptime(last_date, "%Y-%m-%d").date()).days
+        except Exception:
+            age = 99
+        if age > 3:
+            send_message(f"⚠️ Отчёт активаций старый (последние данные: {last_date}). Залей свежий и повтори /digest.", chat_id=owner_chat)
+            return
+        prev_key = _shift_month(cur_key, -1)
+        if prev_key not in months:
+            send_message("⚠️ Нет данных за прошлый месяц — сравнивать не с чем.", chat_id=owner_chat)
+            return
+        day = int(last_date.split("-")[2])
+        if day < 7:
+            send_message(f"⚠️ В отчёте данные только по {day}-е число. В начале месяца прогноз скачет, сводку не шлю — повтори после 7-го.", chat_id=owner_chat)
+            return
+        stats = reconcile_partner_trends(db, cur_key, prev_key, preview_chat=owner_chat if preview else None)
+        if not stats["sent"] and not stats["skipped"]:
+            send_message("Сводка пустая: ушедших в ноль и просевших партнёров нет. 🎉", chat_id=owner_chat)
+            return
+        head = "👀 <b>Предпросмотр</b> (торговым ничего не отправлено)" if preview else f"✅ <b>Сводка отправлена</b> (данные по {day}-е число)"
+        lines = [head, ""]
+        for name, (nz, nd) in stats["sent"].items():
+            parts = []
+            if nz:
+                parts.append(f"🔴 {nz}")
+            if nd:
+                parts.append(f"🟡 {nd}")
+            lines.append(f"• {name}: {' · '.join(parts)}")
+        send_message("\n".join(lines), chat_id=owner_chat)
+        note = _digest_unreached_text(stats)
+        if note:
+            send_message(note, chat_id=owner_chat)
+    except Exception as e:
+        logging.error(f"run_digest_now error: {e}")
+        send_message("❌ Не получилось собрать сводку, посмотри логи Railway.", chat_id=owner_chat)
 
 def reconcile_partner_quiet(db, cur_key):
     """Алерт «партнёр затих»: у каждого партнёра свой порог — в 3 раза дольше
@@ -3086,6 +3174,11 @@ def tg_webhook():
                 elif text == "/reactivate" and str(user_id) == str(OWNER_ID):
                     db = load_db()
                     start_reactivation_flow(user_id, db)
+                elif text.split()[0].split("@")[0] == "/digest" and str(user_id) == str(OWNER_ID):
+                    arg = text.split()[1:2]
+                    preview = bool(arg and arg[0].lower() in ("me", "я", "test", "тест"))
+                    send_message("⏳ Собираю сводку…", chat_id=user_id)
+                    threading.Thread(target=run_digest_now, args=(user_id, preview), daemon=True).start()
                 elif text.split()[0].split("@")[0] == "/batch" and str(user_id) == str(OWNER_ID):
                     db = load_db()
                     parts = text.split()
@@ -3670,6 +3763,7 @@ def setup_bot_commands():
         {"command": "whoami", "description": "Перерегистрироваться (выбрать себя заново)"},
         {"command": "reactivate", "description": "Отдать спящего партнёра торговому на отработку"},
         {"command": "batch", "description": "Раздать пачку спящих партнёров торговым"},
+        {"command": "digest", "description": "Сводка «ушли в ноль» и «просели» торговым сейчас (/digest me — предпросмотр)"},
     ]
     try:
         r = requests.post(url, json={

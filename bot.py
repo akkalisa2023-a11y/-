@@ -1063,6 +1063,69 @@ def reconcile_reactivations(db, cur_key):
     if changed:
         save_db(db)
 
+# ── ТЕЛЕФОНЫ ПАРТНЁРОВ (для сводок торговым) ──────────────────
+# Файл partner_phones.json владелец присылает боту в Telegram (как список
+# спящих). Лежит на Volume, на GitHub его заливать нельзя — там телефоны.
+PHONES_FILE = DATA_DIR / "partner_phones.json"
+_PHONES_CACHE = {"mtime": None, "data": {}}
+
+def load_phones():
+    """{RT-код: 10 цифр телефона}. Перечитывается, только если файл изменился."""
+    try:
+        if PHONES_FILE.exists():
+            m = PHONES_FILE.stat().st_mtime
+            if _PHONES_CACHE["mtime"] != m:
+                raw = json.loads(PHONES_FILE.read_text())
+                if isinstance(raw, dict) and isinstance(raw.get("phones"), dict):
+                    raw = raw["phones"]
+                _PHONES_CACHE["data"] = raw if isinstance(raw, dict) else {}
+                _PHONES_CACHE["mtime"] = m
+            return _PHONES_CACHE["data"]
+    except Exception as e:
+        logging.error(f"load_phones error: {e}")
+    return {}
+
+def fmt_phone(p):
+    """+79777778788 — слитно, Telegram сам подсвечивает такой номер."""
+    d = "".join(ch for ch in str(p or "") if ch.isdigit())
+    if len(d) == 11 and d[0] in "78":
+        d = d[1:]
+    return "+7" + d if len(d) == 10 else ""
+
+def _phone_line(ids):
+    """Вторая строка под партнёром: «+7977… / RT…». Пусто, если RT неизвестен."""
+    rt = next((i for i in ids if re.fullmatch(r"RT\d+", str(i))), None)
+    if not rt:
+        return ""
+    ph = fmt_phone(load_phones().get(rt))
+    return "\n" + (f"{ph} / {rt}" if ph else rt)
+
+def handle_phones_upload(msg, user_id):
+    """Владелец прислал partner_phones.json — заменяем базу телефонов."""
+    doc = msg.get("document", {}) or {}
+    if doc.get("file_size", 0) > 19_000_000:
+        send_message("Файл слишком большой (лимит Telegram 20 МБ).", chat_id=user_id)
+        return
+    try:
+        info = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getFile",
+                            params={"file_id": doc["file_id"]}, timeout=15).json()
+        if not info.get("ok"):
+            send_message("Не смог получить файл от Telegram, пришли ещё раз.", chat_id=user_id)
+            return
+        raw = requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{info['result']['file_path']}", timeout=120).content
+        data = json.loads(raw.decode("utf-8"))
+        phones = data.get("phones") if isinstance(data, dict) and "phones" in data else data
+        if not isinstance(phones, dict) or not phones:
+            send_message("В файле нет телефонов — проверь, что это partner_phones.json.", chat_id=user_id)
+            return
+        clean = {str(k).strip().upper(): v for k, v in phones.items() if fmt_phone(v)}
+        PHONES_FILE.write_text(json.dumps({"uploaded_at": now_msk().isoformat(), "phones": clean}, ensure_ascii=False))
+        _PHONES_CACHE["mtime"] = None
+        send_message(f"✅ Телефоны загружены: {len(clean)} партнёров. Теперь они будут в сводках.", chat_id=user_id)
+    except Exception as e:
+        logging.error(f"handle_phones_upload error: {e}")
+        send_message("Не получилось разобрать файл. Пришли partner_phones.json ещё раз.", chat_id=user_id)
+
 # ── ЕЖЕНЕДЕЛЬНАЯ СВОДКА ПО ПАРТНЁРАМ + АЛЕРТ «ЗАТИХ» ───────────
 WEEKLY_DIGEST_HOUR = int(os.environ.get("WEEKLY_DIGEST_HOUR", "10"))  # во сколько по Москве в понедельник
 QUIET_MULT = 3        # тишина = во столько раз дольше обычного интервала между продажами
@@ -1203,13 +1266,13 @@ def reconcile_partner_trends(db, cur_key, prev_key, preview_chat=None):
         bucket = by_tp.setdefault(tp_name, {"zero": [], "decline": []})
         if n_cur <= 0:
             n_prev2 = max((cnt_prev2.get(i, 0) for i in e["ids"]), default=0) if cnt_prev2 is not None else None
-            bucket["zero"].append((e["name"], n_prev, n_prev2))
+            bucket["zero"].append((e["name"], n_prev, n_prev2, _phone_line(e["ids"])))
         else:
             fc = forecast_for(n_cur)
             if fc < n_prev:
                 pct = round((n_prev - fc) / n_prev * 100)
                 if pct >= 20:
-                    bucket["decline"].append((e["name"], n_prev, fc, pct))
+                    bucket["decline"].append((e["name"], n_prev, fc, pct, _phone_line(e["ids"])))
 
     day_txt = ""
     if last_date:
@@ -1248,15 +1311,15 @@ def reconcile_partner_trends(db, cur_key, prev_key, preview_chat=None):
         if bucket["zero"]:
             zs = sorted(bucket["zero"], key=lambda x: -x[1])
             if cnt_prev2 is None:
-                lines = [f"• {_esc(n)} — было {p1}" for n, p1, _ in zs]
+                lines = [f"• {_esc(n)} — было {p1}{ph}" for n, p1, _, ph in zs]
                 _send_chunked(target, pre + head_zero_plain, lines)
             else:
-                both = [f"• {_esc(n)} — {L2}: {p2}, {L1}: {p1}" for n, p1, p2 in zs if p2 and p2 > 0]
-                only = [f"• {_esc(n)} — {L1}: {p1}" for n, p1, p2 in zs if not p2 or p2 <= 0]
+                both = [f"• {_esc(n)} — {L2}: {p2}, {L1}: {p1}{ph}" for n, p1, p2, ph in zs if p2 and p2 > 0]
+                only = [f"• {_esc(n)} — {L1}: {p1}{ph}" for n, p1, p2, ph in zs if not p2 or p2 <= 0]
                 _send_sections(target, pre + head_zero, [(sub_both, both), (sub_only, only)])
         if bucket["decline"]:
-            lines = [f"• {_esc(n)} — прогноз {fc} против {prev} (−{pct}%)"
-                     for n, prev, fc, pct in sorted(bucket["decline"], key=lambda x: -x[3])]
+            lines = [f"• {_esc(n)} — прогноз {fc} против {prev} (−{pct}%){ph}"
+                     for n, prev, fc, pct, ph in sorted(bucket["decline"], key=lambda x: -x[3])]
             _send_chunked(target, pre + head_decl, lines)
     return stats
 
@@ -1406,7 +1469,7 @@ def reconcile_partner_quiet(db, cur_key):
         skey = f"{key}|{e['ld']}"
         if skey in state:
             continue
-        by_tp.setdefault(e["tp"], []).append((days, e["name"], e["ld"], e["prev"], skey))
+        by_tp.setdefault(e["tp"], []).append((days, e["name"], e["ld"], e["prev"], skey, _phone_line({key})))
 
     head = ("🔕 <b>Партнёры, которые затихли.</b> Это твои действующие партнёры: раньше продавали регулярно, "
             "а сейчас дольше обычного нет активаций. Позвони, узнай, в чём дело:")
@@ -1415,8 +1478,8 @@ def reconcile_partner_quiet(db, cur_key):
         if not contact:
             continue
         items.sort(key=lambda x: -x[0])
-        lines = [f"• {_esc(n)} — обычно ~{prev} акт./мес, последняя активация {ld[8:10]}.{ld[5:7]}, тишина {d} дн."
-                 for d, n, ld, prev, _ in items]
+        lines = [f"• {_esc(n)} — обычно ~{prev} акт./мес, последняя активация {ld[8:10]}.{ld[5:7]}, тишина {d} дн.{ph}"
+                 for d, n, ld, prev, _, ph in items]
         if _send_chunked(contact["id"], head, lines):
             for it in items:
                 state[it[4]] = True
@@ -3154,7 +3217,10 @@ def tg_webhook():
 
             # Документ от владельца — это список спящих (sleeping_list.json)
             if "document" in msg and str(user_id) == str(OWNER_ID):
-                handle_sleeping_upload(msg, user_id)
+                if "phones" in ((msg.get("document", {}) or {}).get("file_name") or "").lower():
+                    handle_phones_upload(msg, user_id)
+                else:
+                    handle_sleeping_upload(msg, user_id)
                 return jsonify({"ok": True})
 
             if not text or text.startswith("/"):

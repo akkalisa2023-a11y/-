@@ -3335,7 +3335,12 @@ def ping():
 @app.route("/data")
 def get_data():
     db = load_db()
-    return jsonify(db)
+    if check_auth():
+        return jsonify(db)
+    # Без секрета отдаём только то, что нужно дашборду для цифр: активации и
+    # привлечение. Контакты Telegram, чек-ины, отпуска, территории — закрыты.
+    public = {k: db[k] for k in ("months", "privl", "privl_total", "privl_months") if k in db}
+    return jsonify(public)
 
 # Дашборд заливает данные активаций за месяц
 @app.route("/upload/activations", methods=["POST"])
@@ -3757,6 +3762,7 @@ def reactivation_stats():
         "tracking": "Договорились",  # закреплено = уже было "Договорился", просто дальше отслеживаем
     }
 
+    is_admin = check_auth()  # телефоны и RT видны только с секретом (админ в дашборде)
     rows = []
     for req_id, req in reactivation.items():
         status = req.get("status", "")
@@ -3764,9 +3770,9 @@ def reactivation_stats():
             "id": req_id,
             "tp": clean_tp_name(req.get("tp", "")),
             "partner": req.get("partner", ""),
-            "partner_full": req.get("partner_full", req.get("partner", "")),
-            "phone": req.get("phone", ""),
-            "rt_code": req.get("rt_code", ""),
+            "partner_full": req.get("partner_full", req.get("partner", "")) if is_admin else req.get("partner", ""),
+            "phone": req.get("phone", "") if is_admin else "",
+            "rt_code": req.get("rt_code", "") if is_admin else "",
             "status": status,
             "status_label": STATUS_LABELS.get(status, status),
             "tracked": status == "tracking",

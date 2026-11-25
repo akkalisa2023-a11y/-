@@ -1735,7 +1735,7 @@ function renderReactivationFromCache(){
 async function loadReactivation(){
   if (!BOT_URL) { toast('⚠️ Бот не настроен'); return; }
   try {
-    const r = await fetch(`${BOT_URL}/reactivation-stats`);
+    const r = await fetch(`${BOT_URL}/reactivation-stats`, { headers: {'X-API-Secret': localStorage.getItem('as_api_secret') || 'as_secret_2026'} });
     _rcData = await r.json();
     renderReactivationFromCache();
   } catch(e) {

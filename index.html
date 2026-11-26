@@ -737,6 +737,14 @@ function excelToMonth(v){
   return null;
 }
 
+function excelToDay(v){
+  // дата целиком YYYY-MM-DD (для воронки и бота: «новый партнёр не продал»)
+  if(!v)return null;
+  if(typeof v==='string'){const m=v.match(/^(\d{2})\.(\d{2})\.(\d{4})/);return m?`${m[3]}-${m[2]}-${m[1]}`:null;}
+  if(typeof v==='number'){const d=new Date(Math.round((v-25569)*86400*1000));return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;}
+  return null;
+}
+
 function processActivations(headers, rows){
   const iR=colIdx(headers,'Ритейл'), iT=colIdx(headers,'Торговый'),
         iO=colIdx(headers,'Оператор'), iD=colIdx(headers,'Дата активации'),
@@ -909,7 +917,7 @@ function processPrivl(headers,rows){
     if(!tp||!nm||!m) return;
     const key=normName(nm).replace(/ё/g,'е');
     if(!cohorts[m]) cohorts[m]={};
-    if(!cohorts[m][key]) cohorts[m][key]={n:nm,t:tp,s:normName(String(r[iDirectCreator]||''))!==normName(tp)?1:0};
+    if(!cohorts[m][key]) cohorts[m][key]={n:nm,t:tp,s:normName(String(r[iDirectCreator]||''))!==normName(tp)?1:0,d:excelToDay(r[iD])};
   });
 
   const stored=JSON.parse(localStorage.getItem('as_dash_v4'));

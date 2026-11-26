@@ -246,6 +246,18 @@ def is_on_vacation(db, tp_name, date_str=None):
             return True
     return False
 
+def tp_notifiable(db, tp_name):
+    """Можно ли слать торговому автоматические уведомления: не в выходные
+    (сб/вс по Москве) и не в отпуске. На то, что владелец сам запросил
+    (/digest, /batch, ручная выдача), это не влияет."""
+    if now_msk().weekday() >= 5:
+        return False
+    n = norm_name(tp_name)
+    for k in db.get("vacations", {}):
+        if norm_name(k) == n and is_on_vacation(db, k):
+            return False
+    return True
+
 def send_registration_keyboard(chat_id, db):
     """Присылает агенту список ТП кнопками — чтобы он один раз явно
     указал, кто он, вместо ненадёжного автоматического угадывания по имени."""
@@ -1042,9 +1054,11 @@ def reconcile_reactivations(db, cur_key):
         if acts > 0 and not req.get("revived"):
             req["revived"] = True
             changed = True
+        if acts > 0 and req.get("revived"):
             if req.get("notified_status") != "revived":
                 req["notified_status"] = "revived"
-                if contact and contact.get("id"):
+                changed = True
+                if contact and contact.get("id"):  # «ожил» приходит всегда, и в выходные, и в отпуске
                     send_message(f"🎉 Ура, партнёр ожил — {acts} акт. в этом месяце! Отличная работа!\n{req.get('partner_full', partner)}", chat_id=contact["id"])
                 send_message(f"🎉 У <b>{clean_tp_name(tp_name)}</b> ожил партнёр {partner} — {acts} акт.!", chat_id=OWNER_ID)
         elif acts == 0 and not req.get("revived"):
@@ -1053,7 +1067,7 @@ def reconcile_reactivations(db, cur_key):
     for tp_name, names in not_revived_by_tp.items():
         contact = db.get("tp_contacts", {}).get(tp_name)
         names_list = "\n\n".join(f"• {n}" for n in names)
-        if contact and contact.get("id"):
+        if contact and contact.get("id") and tp_notifiable(db, tp_name):
             word = "партнёр" if len(names) == 1 else "партнёры"
             send_message(
                 f"😴 Ещё не ожил{'и' if len(names)>1 else ''} {word} за тобой:\n\n{names_list}",
@@ -1323,6 +1337,87 @@ def reconcile_partner_trends(db, cur_key, prev_key, preview_chat=None):
             _send_chunked(target, pre + head_decl, lines)
     return stats
 
+NEWP_MIN_DAYS = 7    # не трогаем совсем новых — дадим неделю
+NEWP_MAX_DAYS = 30   # дольше месяца без продаж — уже не «новый», а мёртвый
+
+def _newp_key(name):
+    return norm_name(name).replace("ё", "е")
+
+def reconcile_new_partners(db, preview_chat=None):
+    """«Новый партнёр не продал»: привлечён 7–30 дней назад, а активаций (без
+    фрода) нет — торговому список: позвони, помоги с первой продажей. Список и
+    даты привлечения берём из отчёта привлечения (cohort, поле d). Партнёры
+    ищутся по ФИО — как в воронке на дашборде."""
+    from html import escape as _esc
+    now = now_msk()
+    cur_key = f"{now.year}-{now.month:02d}"
+    prev_key = _shift_month(cur_key, -1)
+    pm = db.get("privl_months", {})
+    cohorts = []
+    for mk in (prev_key, cur_key):
+        cohorts += [c for c in ((pm.get(mk) or {}).get("cohort") or [])]
+    stats = {"sent": {}, "skipped": {}, "no_list": not cohorts,
+             "no_dates": bool(cohorts) and not any(c.get("d") for c in cohorts)}
+    if not cohorts:
+        return stats
+    sold = set()
+    for mk, mo in db.get("months", {}).items():
+        if mk < prev_key:
+            continue
+        for p in mo.get("partners", []):
+            if (p.get("acts", 0) - p.get("fraud", 0)) > 0:
+                sold.add(_newp_key(p.get("r")))
+    by_tp = {}
+    for c in cohorts:
+        d = c.get("d")
+        if not d or not c.get("t"):
+            continue
+        try:
+            age = (now.date() - datetime.strptime(d, "%Y-%m-%d").date()).days
+        except Exception:
+            continue
+        if not (NEWP_MIN_DAYS <= age <= NEWP_MAX_DAYS) or _newp_key(c.get("n")) in sold:
+            continue
+        if any(ex in c["t"] for ex in EXCLUDED_FROM_REPORT):
+            continue
+        by_tp.setdefault(c["t"], []).append((age, c.get("n", ""), d))
+    head = ("🆕 <b>Новые партнёры без продаж.</b> Привлечены от недели до месяца назад, "
+            "а ни одной активации пока нет. Позвони, помоги с первой продажей:")
+    for tp, items in by_tp.items():
+        disp = clean_tp_name(tp)
+        contact, reason = _tp_contact_info(db, tp)
+        if preview_chat:
+            target, pre = preview_chat, f"👤 <i>для: {_esc(disp)}</i>\n\n"
+        elif contact:
+            target, pre = contact["id"], ""
+        else:
+            stats["skipped"][disp] = (reason, len(items))
+            continue
+        items.sort(key=lambda x: -x[0])
+        lines = [f"• {_esc(n)} — привлечён {d[8:10]}.{d[5:7]}, {age} дн. назад" for age, n, d in items]
+        _send_chunked(target, pre + head, lines)
+        stats["sent"][disp] = len(items)
+    return stats
+
+def _new_partners_owner_text(stats, verbose, preview=False):
+    """Итог для владельца. verbose=False (понедельничная автосводка) — молчим, если слать нечего."""
+    from html import escape as _esc
+    if stats.get("no_list"):
+        return "🆕 Новые партнёры без продаж: нет списка привлечённых за этот и прошлый месяц. Залей отчёт привлечения." if verbose else None
+    if stats.get("no_dates"):
+        return "🆕 Новые партнёры без продаж: в списке привлечённых нет дат. Залей отчёт привлечения заново через обновлённый дашборд, и бот начнёт присылать."
+    if not stats["sent"] and not stats["skipped"]:
+        return "🆕 Новых партнёров без продаж нет 🎉" if verbose else None
+    lines = ["👀 <b>Новые без продаж</b> (предпросмотр, торговым ничего не отправлено)" if preview
+             else "🆕 <b>Новые партнёры без продаж</b> отправлены торговым:"]
+    for name, n in stats["sent"].items():
+        lines.append(f"• {_esc(name)}: {n}")
+    if stats["skipped"]:
+        lines += ["", "⚠️ Не получили (бот не смог написать, передай сам):"]
+        for name, (reason, n) in stats["skipped"].items():
+            lines.append(f"• {_esc(name)} — {reason} ({n})")
+    return "\n".join(lines)
+
 def weekly_partner_digest():
     """Каждый понедельник: «ушли в ноль» + «просели».
     Если отчёт активаций давно не заливали — не шлём (иначе цифры врут) и
@@ -1350,6 +1445,12 @@ def weekly_partner_digest():
             note = _digest_unreached_text(stats)
             if note:
                 send_message(note, chat_id=OWNER_ID)
+        try:
+            nt = _new_partners_owner_text(reconcile_new_partners(db), False)
+            if nt:
+                send_message(nt, chat_id=OWNER_ID)
+        except Exception as e:
+            logging.error(f"new partners digest error: {e}")
         logging.info("Weekly partner digest sent")
     except Exception as e:
         logging.error(f"weekly_partner_digest error: {e}")
@@ -1389,6 +1490,13 @@ def run_digest_now(owner_chat, preview=False):
         if age > 3:
             send_message(f"⚠️ Отчёт активаций старый (последние данные: {last_date}). Залей свежий и повтори /digest.", chat_id=owner_chat)
             return
+        try:
+            nstats = reconcile_new_partners(db, preview_chat=owner_chat if preview else None)
+            nt = _new_partners_owner_text(nstats, True, preview)
+            if nt:
+                send_message(nt, chat_id=owner_chat)
+        except Exception as e:
+            logging.error(f"new partners (manual) error: {e}")
         prev_key = _shift_month(cur_key, -1)
         if prev_key not in months:
             send_message("⚠️ Нет данных за прошлый месяц — сравнивать не с чем.", chat_id=owner_chat)
@@ -1425,6 +1533,8 @@ def reconcile_partner_quiet(db, cur_key):
     в прошлом месяце не проверяется (нет базы). По одной паузе — одно
     сообщение. Срабатывает при заливке отчёта."""
     from html import escape as _esc
+    if now_msk().weekday() >= 5:
+        return  # выходные — не шлём; уйдёт при следующей заливке в будни
     cur_month = db["months"].get(cur_key, {})
     ref = cur_month.get("last_date")
     if not ref:
@@ -2259,20 +2369,26 @@ def get_praise(rank, grade, name):
         phrases = [
             f"🏆 {first_name} снова №1 — машина продаж!",
             f"🚀 {first_name} рвёт всех — абсолютный топ месяца!",
-            f"💎 {first_name} на вершине — держи темп, чемпион!"
+            f"💎 {first_name} на вершине — держи темп, чемпион!",
+            f"👑 {first_name} — король месяца! Так держать!",
+            f"⚡ {first_name} впереди всех — Фёдор аплодирует!"
         ]
     elif rank == 2:
         phrases = [
             f"🥈 {first_name} — крепкий второй! До первого рукой подать 💪",
-            f"🥈 {first_name} дышит в спину лидеру — так держать!"
+            f"🥈 {first_name} дышит в спину лидеру — так держать!",
+            f"🥈 {first_name} — второй, но с амбициями на первое место! 🔥"
         ]
     elif rank == 3:
         phrases = [
             f"🥉 {first_name} — бронза! В тройке лучших — уже круто 👏",
-            f"🥉 {first_name} в топ-3 — отличный результат!"
+            f"🥉 {first_name} в топ-3 — отличный результат!",
+            f"🥉 {first_name} в тройке! Ещё чуть-чуть — и выше! 🚀"
         ]
     elif grade == "A":
-        phrases = [f"🔥 {first_name} — огонь месяца! Растёшь!"]
+        phrases = [f"🔥 {first_name} — огонь месяца! Растёшь!",
+                   f"💪 {first_name} в отличной форме — так держать!",
+                   f"📈 {first_name} показывает уверенный результат!"]
     else:
         return None
     return random.choice(phrases)
@@ -2543,6 +2659,68 @@ PRAISE_PUBLIC = [
     "💚 И пока Валера отдыхает — отдельный респект <b>{name}</b>!\nПо прогнозу на месяц {acts} активаций — это машина продаж! 🚀",
     "💚 Кстати, <b>{name}</b> снова топ по прогнозу месяца!\n{acts} акт. — Фёдор доволен! 👏",
     "💚 <b>{name}</b> показывает как надо!\nПрогноз {acts} активаций — берите пример! 🏆",
+]
+
+# ── Дополнительные фразы (разнообразие, чтобы не приедалось) ──
+TRANSFORM_PHRASES += [
+    "😶 Фёдор молча посмотрел на цифры...\n🔄 Что-то внутри щёлкнуло...\n💥 <b>ВАЛЕРА ПРОСНУЛСЯ!</b>",
+    "☕ Фёдор отпил чай и поморщился...\n⚡ Лицо стало серьёзным...\n😈 <b>ВАЛЕРА УЖЕ НА ПОДХОДЕ!</b>",
+    "📉 Фёдор увидел график...\n🌀 Терпение закончилось...\n🔥 <b>НА СЦЕНУ ВЫХОДИТ ВАЛЕРА!</b>",
+]
+VALERA_INTRO += [
+    "Валера на месте. И у Валеры вопросы. 🧐",
+    "Привет, это Валера. Я посмотрел отчёт. Поговорим? 😠",
+    "Валера в здании. Расслабляться рано. 😈",
+]
+GROWTH_PRAISE += [
+    "📈 Темп растёт, команда молодцы! Фёдор доволен.",
+    "🏆 Вот так надо работать! Фёдор достал блокнот и записывает рекорды.",
+    "💚 Красота, а не цифры! Фёдор хвалит всех сразу.",
+    "⚡ Команда в ударе! Фёдор даже чай забыл допить.",
+    "🎯 В точку! Растём — Фёдор доволен, Валера скучает.",
+    "🌟 Так держать! Фёдор готов повесить цифры на стену.",
+    "🥳 Прогноз радует! Фёдор объявляет минуту аплодисментов.",
+]
+STEADY_PRAISE += [
+    "Фёдор смотрит на цифры и кивает 🙂",
+    "Без обвалов и без фейерверков — Фёдор спокоен 😌",
+    "Месяц идёт по плану, Фёдор не волнуется 🧘",
+    "Ровно и стабильно, Фёдор попивает чай ☕",
+    "Фёдор приглядывает за динамикой, пока всё в порядке 👌",
+]
+FRAUD_RANTS += [
+    "{name}, Валера открыл отчёт и закрыл. Открыл снова: {fraud} фродов ({pct}%). Ничего не изменилось! Объясняй! 🚨",
+    "{name}! {fraud} фрод-активаций — это {pct}%! Валера хочет знать, кто эти партнёры и почему ты их не проверил! 🔍",
+    "Слышь, {name}, {pct}% фрода — это не опечатка. Валера ждёт разбор сегодня! 😠",
+    "{name}, {fraud} фродов. Валера не злой, Валера просто очень разочарован. И злой тоже! 🔴",
+    "{name}, партнёры с фродом — твоя зона ответственности. {fraud} шт., {pct}%. Валера ждёт план! 📋",
+    "{name}! Фрод {pct}% — Валера вызывает на ковёр! Приходи с объяснениями и списком партнёров! 🧾",
+]
+DROP_RANTS += [
+    "{name}, было {prev}, по темпу выйдет {cur}. Минус {diff}! Валера хочет понять, куда делись активации! 📉",
+    "{name}! Падение на {pct}% к прошлому месяцу — это не просадка, это обвал. Валера ждёт объяснений! 😤",
+    "Валера смотрит на твой прогноз, {name}: {cur} против {prev}. Что случилось с партнёрами? Отвечай! 🕵️",
+    "{name}, минус {diff} активаций к прошлому месяцу при таком темпе. Валера не молчит — расскажи, что делаем! 🛠️",
+    "{name}! {prev} → {cur}. Валера считал три раза, получилось то же самое. Объясни! 🧮",
+    "Слушай, {name}: темп упал на {pct}%. Валера хочет план, а не «так вышло»! 📋",
+]
+PRIVL_RANTS += [
+    "{name}, {count} привлечений за месяц, из них уникальных {uniq}. Валера ждал больше! 😒",
+    "{name}! Новых партнёров почти нет: {uniq} уникальных. База сама не растёт, Валера напоминает! 🌱",
+    "Валера открыл привлечение, {name}, и загрустил: всего {count}. Где новые лица? 👀",
+    "{name}, {uniq} уникальных за месяц — маловато. Валера ждёт, что ты возьмёшься за привлечение! 📲",
+    "{name}! С такими цифрами ({count} всего) нового не вырастет. Валера хочет видеть рывок! 🚀",
+]
+VALERA_VACATION += [
+    "😌 Фёдор изучил отчёт...\n✅ Всё в пределах нормы...\n🏝️ <b>Валера уехал в отпуск, сегодня не придёт!</b>\n\nМолодцы, команда! Фёдор доволен. 💚",
+    "🧐 Фёдор проверил каждую строчку...\n✨ Придраться не к чему...\n🛌 <b>Валера спит — будить не будем!</b>\n\nТак держать, Фёдор гордится! 🏆",
+    "😊 Фёдор открыл отчёт...\n👍 Цифры радуют...\n🎣 <b>Валера ушёл на рыбалку и сегодня не вернётся!</b>\n\nОтличная работа! Фёдор хлопает. 👏",
+]
+PRAISE_PUBLIC += [
+    "💚 А вот <b>{name}</b> в этом месяце молодец!\nПрогноз {acts} активаций — Фёдор гордится! 🏅",
+    "💚 Отдельное спасибо <b>{name}</b>!\n{acts} активаций по прогнозу — так держать! 💪",
+    "💚 <b>{name}</b> задаёт планку: прогноз {acts} акт. Берите пример! 🌟",
+    "💚 Респект <b>{name}</b>!\nПрогноз {acts} активаций — Фёдор аплодирует стоя! 👏",
 ]
 
 def build_forecast_callout(d, dp, show_transform=True):
@@ -2884,6 +3062,8 @@ def send_personal_callouts(db, offenders_by_reason):
         contact = contacts.get(name)
         if not contact or not contact.get("id"):
             continue  # не зарегистрирован в боте — личку послать некому
+        if not tp_notifiable(db, name):
+            continue  # выходной или отпуск — не беспокоим, напомнит check_reminders в рабочий день
         reason_lines = "\n".join(f"• {CALLOUT_REASON_TEXT.get(r, r)}" for r in reasons)
         send_message(
             f"⚠️ Валера вызывает тебя на разбор:\n\n{reason_lines}\n\n"
@@ -2946,6 +3126,9 @@ def check_reminders():
     """Раз в N минут проверяет, кто не ответил Валере дольше REMINDER_HOURS,
     и шлёт напоминание — в личку, если знаем tg id, иначе в группу с тегом по имени."""
     try:
+        _n = now_msk()
+        if _n.weekday() >= 5 or _n.hour < 9 or _n.hour >= 20:
+            return  # выходные и нерабочие часы — не шлём
         db = load_db()
         pending = db.get("pending_calls", {})
         if not pending:
@@ -2955,6 +3138,8 @@ def check_reminders():
         for name, info in pending.items():
             if info.get("reminded"):
                 continue
+            if not tp_notifiable(db, name):
+                continue  # в отпуске — не напоминаем
             try:
                 since = datetime.fromisoformat(info["since"])
             except Exception:
@@ -3066,6 +3251,13 @@ def check_reactivation_reminders():
             else:
                 threshold = timedelta(hours=REACTIVATION_REMINDER_HOURS)
             if now - since < threshold:
+                continue
+
+            # В отпуске не напоминаем; таймер двигаем на "сейчас", чтобы после
+            # возвращения не прилетела вся накопившаяся пачка разом
+            if not tp_notifiable(db, req.get("tp")):
+                req["last_touched_at"] = now.isoformat()
+                changed = True
                 continue
 
             # Разносим: не больше MAX_REMINDERS_PER_TP_RUN напоминаний одному торговому
@@ -3439,6 +3631,8 @@ def new_subdealers():
                 contact = contacts.get(matched) if matched else None
             if not (contact and contact.get("id")):
                 continue
+            if not tp_notifiable(db, tp_canonical):
+                continue  # выходной/отпуск: не помечаем как "видели" — придёт при следующей заливке
 
             if norm_name(creator) == norm_name(tp_raw):
                 text = f"🆕 Валера сообщает: у тебя новый субдилер — <b>{name}</b>. Свяжись с ним!"
@@ -3729,14 +3923,18 @@ def dedupe_reactivation():
     priority = {"tracking": 5, "tp_agreed": 4, "in_progress": 3, "no_answer": 2, "pending_tp": 1, "tp_declined": 0}
     groups = {}
     for rid, req in reactivation.items():
-        key = req.get("partner", "").strip().lower()
+        # RT-код у каждого партнёра уникален — сверяем по нему; если RT нет, по имени
+        rt = str(req.get("rt_code", "")).strip().upper()
+        key = ("rt:" + rt) if rt else ("n:" + norm_name(req.get("partner", "")))
         groups.setdefault(key, []).append((rid, req))
 
     removed = 0
     for key, items in groups.items():
         if len(items) <= 1:
             continue
-        items.sort(key=lambda x: (priority.get(x[1].get("status"), -1), x[1].get("assigned_at", "")), reverse=True)
+        # Оставляем запись с более продвинутым статусом; при равном статусе —
+        # ту, что выдана раньше (торговый уже с ней работает)
+        items.sort(key=lambda x: (-priority.get(x[1].get("status"), -1), x[1].get("assigned_at") or ""))
         for rid, _ in items[1:]:
             del reactivation[rid]
             removed += 1
@@ -3835,7 +4033,7 @@ def setup_bot_commands():
         {"command": "whoami", "description": "Перерегистрироваться (выбрать себя заново)"},
         {"command": "reactivate", "description": "Отдать спящего партнёра торговому на отработку"},
         {"command": "batch", "description": "Раздать пачку спящих партнёров торговым"},
-        {"command": "digest", "description": "Сводка «ушли в ноль» и «просели» торговым сейчас (/digest me — предпросмотр)"},
+        {"command": "digest", "description": "Сводки торговым сейчас: ушли в ноль, просели, новые без продаж (/digest me — предпросмотр)"},
     ]
     try:
         r = requests.post(url, json={
